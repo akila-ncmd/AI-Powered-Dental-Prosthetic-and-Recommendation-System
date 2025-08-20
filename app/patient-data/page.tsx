@@ -1,30 +1,61 @@
 "use client"
 
-import type React from "react"
-
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
-import { Check, ChevronRight, AlertCircle, Shield, User, DollarSign, FileText } from "lucide-react"
 import Link from "next/link"
+import {
+  User,
+  DollarSign,
+  AlertCircle,
+  CheckCircle,
+  ArrowRight,
+  ArrowLeft,
+  Shield,
+  Heart,
+  Activity,
+  Loader2,
+} from "lucide-react"
+import { useAIAnalysis } from "@/hooks/use-ai-analysis"
+import { useToast } from "@/hooks/use-toast"
+import type { PatientData } from "@/lib/ai-service"
 
-type FormData = {
+interface FormData {
+  // Personal Information
   firstName: string
   lastName: string
   age: string
   gender: string
   ethnicity: string
+
+  // Medical Information
   medicalHistory: string
+  currentMedications: string
   allergies: string
+  smokingStatus: string
+
+  // Dental History
+  previousDentalWork: string
+  oralHygiene: string
+
+  // Financial & Preferences
   budget: string
-  previousTreatments: string
+  insuranceProvider: string
+  treatmentPreferences: string
 }
 
-type FormErrors = {
-  [key in keyof FormData]?: string
+interface FormErrors {
+  [key: string]: string
 }
 
 export default function PatientDataPage() {
   const router = useRouter()
+  const { toast } = useToast()
+  const { generateRecommendations, isGeneratingRecommendations, recommendations, error } = useAIAnalysis()
+
+  const [currentStep, setCurrentStep] = useState(1)
+  const [isSubmitted, setIsSubmitted] = useState(false)
+  const [xrayAnalysis, setXrayAnalysis] = useState(null)
+
   const [formData, setFormData] = useState<FormData>({
     firstName: "",
     lastName: "",
@@ -32,452 +63,646 @@ export default function PatientDataPage() {
     gender: "",
     ethnicity: "",
     medicalHistory: "",
+    currentMedications: "",
     allergies: "",
+    smokingStatus: "",
+    previousDentalWork: "",
+    oralHygiene: "",
     budget: "",
-    previousTreatments: "",
+    insuranceProvider: "",
+    treatmentPreferences: "",
   })
 
   const [errors, setErrors] = useState<FormErrors>({})
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  const [isSubmitted, setIsSubmitted] = useState(false)
-  const [currentStep, setCurrentStep] = useState(1)
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
-    const { name, value } = e.target
-    setFormData((prev) => ({ ...prev, [name]: value }))
+  // Load X-ray analysis from session storage
+  useEffect(() => {
+    const storedAnalysis = sessionStorage.getItem("xrayAnalysis")
+    if (storedAnalysis) {
+      setXrayAnalysis(JSON.parse(storedAnalysis))
+    } else {
+      // Redirect to upload if no analysis found
+      router.push("/upload")
+    }
+  }, [router])
 
-    // Clear error when field is edited
-    if (errors[name as keyof FormData]) {
-      setErrors((prev) => ({ ...prev, [name]: undefined }))
+  const handleInputChange = (field: keyof FormData, value: string) => {
+    setFormData((prev) => ({ ...prev, [field]: value }))
+    if (errors[field]) {
+      setErrors((prev) => ({ ...prev, [field]: "" }))
     }
   }
 
-  const validateForm = () => {
+  const validateStep = (step: number): boolean => {
     const newErrors: FormErrors = {}
 
-    // Step 1 validation
-    if (currentStep === 1) {
+    if (step === 1) {
       if (!formData.firstName.trim()) newErrors.firstName = "First name is required"
       if (!formData.lastName.trim()) newErrors.lastName = "Last name is required"
       if (!formData.age.trim()) {
         newErrors.age = "Age is required"
       } else if (isNaN(Number(formData.age)) || Number(formData.age) <= 0 || Number(formData.age) > 120) {
-        newErrors.age = "Please enter a valid age"
+        newErrors.age = "Please enter a valid age (1-120)"
       }
       if (!formData.gender) newErrors.gender = "Gender is required"
     }
 
-    // Step 2 validation
-    if (currentStep === 2) {
+    if (step === 2) {
       if (!formData.medicalHistory.trim()) newErrors.medicalHistory = "Medical history is required"
-      if (formData.budget && isNaN(Number(formData.budget))) {
-        newErrors.budget = "Budget must be a number"
-      }
+      if (!formData.smokingStatus) newErrors.smokingStatus = "Smoking status is required"
+    }
+
+    if (step === 3) {
+      if (!formData.previousDentalWork.trim())
+        newErrors.previousDentalWork = "Previous dental work information is required"
+      if (!formData.oralHygiene) newErrors.oralHygiene = "Oral hygiene rating is required"
     }
 
     setErrors(newErrors)
     return Object.keys(newErrors).length === 0
   }
 
-  const handleNextStep = () => {
-    if (validateForm()) {
+  const handleNext = () => {
+    if (validateStep(currentStep)) {
       setCurrentStep((prev) => prev + 1)
       window.scrollTo(0, 0)
     }
   }
 
-  const handlePrevStep = () => {
+  const handlePrevious = () => {
     setCurrentStep((prev) => prev - 1)
     window.scrollTo(0, 0)
   }
 
   const handleSubmit = async () => {
-    if (!validateForm()) return
+    if (!validateStep(currentStep) || !xrayAnalysis) return
 
-    setIsSubmitting(true)
+    // Convert form data to PatientData format
+    const patientData: PatientData = {
+      demographics: {
+        age: Number(formData.age),
+        gender: formData.gender,
+        ethnicity: formData.ethnicity || undefined,
+      },
+      medical: {
+        conditions: formData.medicalHistory
+          .split(",")
+          .map((c) => c.trim())
+          .filter(Boolean),
+        medications: formData.currentMedications
+          .split(",")
+          .map((m) => m.trim())
+          .filter(Boolean),
+        allergies: formData.allergies
+          .split(",")
+          .map((a) => a.trim())
+          .filter(Boolean),
+        smokingStatus: formData.smokingStatus as "never" | "former" | "current" | "occasional",
+      },
+      dental: {
+        previousWork: formData.previousDentalWork,
+        oralHygiene: formData.oralHygiene as "excellent" | "good" | "fair" | "poor",
+      },
+      preferences: {
+        budget: formData.budget ? Number(formData.budget) : undefined,
+        insurance: formData.insuranceProvider || undefined,
+        treatmentPreferences: formData.treatmentPreferences || undefined,
+      },
+    }
 
-    // Simulate API call
-    setTimeout(() => {
-      setIsSubmitting(false)
-      setIsSubmitted(true)
+    try {
+      const result = await generateRecommendations(patientData)
 
-      // Redirect after 2 seconds
-      setTimeout(() => {
-        router.push("/recommendations")
-      }, 2000)
-    }, 1500)
+      if (result) {
+        setIsSubmitted(true)
+
+        // Store patient data and recommendations for use in other pages
+        sessionStorage.setItem("patientData", JSON.stringify(patientData))
+        sessionStorage.setItem("recommendations", JSON.stringify(result))
+
+        toast({
+          title: "Analysis complete!",
+          description: "AI recommendations have been generated successfully",
+        })
+
+        // Redirect to recommendations page after a short delay
+        setTimeout(() => {
+          router.push("/recommendations")
+        }, 2000)
+      }
+    } catch (err) {
+      toast({
+        title: "Generation failed",
+        description: error || "Failed to generate recommendations. Please try again.",
+        variant: "destructive",
+      })
+    }
+  }
+
+  const steps = [
+    { number: 1, title: "Personal Info", icon: User },
+    { number: 2, title: "Medical History", icon: Heart },
+    { number: 3, title: "Dental History", icon: Activity },
+    { number: 4, title: "Preferences", icon: DollarSign },
+  ]
+
+  if (isSubmitted) {
+    return (
+      <div className="min-h-screen pt-20 pb-16 bg-gradient-to-br from-slate-50 via-blue-50/30 to-indigo-50/20 flex items-center justify-center">
+        <div className="max-w-2xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+          <div className="bg-white rounded-3xl shadow-2xl p-12 border border-gray-100">
+            <div className="w-20 h-20 bg-gradient-to-br from-green-500 to-emerald-500 rounded-full flex items-center justify-center mx-auto mb-6">
+              <CheckCircle className="h-10 w-10 text-white" />
+            </div>
+
+            <h1 className="text-3xl font-bold text-gray-800 mb-4">Patient Data Submitted Successfully!</h1>
+
+            <p className="text-xl text-gray-600 mb-8">
+              Your patient information has been securely processed. Our AI is now analyzing the data to generate
+              personalized prosthetic recommendations.
+            </p>
+
+            <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-2xl p-6 mb-8">
+              <h3 className="font-semibold text-gray-800 mb-2">Processing Status:</h3>
+              <div className="space-y-2">
+                <div className="flex items-center text-sm">
+                  <CheckCircle className="h-4 w-4 text-green-500 mr-2" />
+                  <span className="text-gray-700">X-ray analysis completed</span>
+                </div>
+                <div className="flex items-center text-sm">
+                  <CheckCircle className="h-4 w-4 text-green-500 mr-2" />
+                  <span className="text-gray-700">Patient data processed</span>
+                </div>
+                <div className="flex items-center text-sm">
+                  <Loader2 className="h-4 w-4 text-blue-500 mr-2 animate-spin" />
+                  <span className="text-gray-700">Generating AI recommendations...</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="text-sm text-gray-500">Redirecting to recommendations in a few seconds...</div>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (
-    <div className="min-h-screen pt-20 pb-16 bg-gradient-to-br from-gray-50 to-blue-50">
+    <div className="min-h-screen pt-20 pb-16 bg-gradient-to-br from-slate-50 via-blue-50/30 to-indigo-50/20">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8">
-        <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-gray-900 mb-4">Patient Information</h1>
+        {/* Header */}
+        <div className="text-center mb-12">
+          <div className="inline-flex items-center space-x-2 bg-blue-100 text-blue-800 text-sm font-medium px-4 py-2 rounded-full mb-6">
+            <User className="h-4 w-4" />
+            <span>Step 2 of 4: Patient Information</span>
+          </div>
+          <h1 className="text-4xl md:text-5xl font-bold text-gray-900 mb-6">
+            Patient{" "}
+            <span className="bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
+              Information
+            </span>
+          </h1>
           <p className="text-xl text-gray-600 max-w-3xl mx-auto">
-            Provide patient details to help our AI generate personalized prosthetic recommendations
+            Provide comprehensive patient details to generate accurate and personalized prosthetic recommendations
           </p>
         </div>
 
         {/* Progress Steps */}
-        <div className="max-w-3xl mx-auto mb-8">
+        <div className="max-w-4xl mx-auto mb-12">
           <div className="flex items-center justify-between">
-            <div className="flex flex-col items-center">
-              <div
-                className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                  currentStep >= 1 ? "bg-blue-600 text-white" : "bg-gray-200 text-gray-600"
-                }`}
-              >
-                <User className="h-5 w-5" />
-              </div>
-              <span className="text-sm mt-2 text-gray-600">Personal Info</span>
-            </div>
+            {steps.map((step, index) => {
+              const Icon = step.icon
+              const isActive = currentStep === step.number
+              const isCompleted = currentStep > step.number
 
-            <div className={`flex-1 h-1 mx-2 ${currentStep >= 2 ? "bg-blue-600" : "bg-gray-200"}`}></div>
+              return (
+                <div key={step.number} className="flex items-center">
+                  <div className="flex flex-col items-center">
+                    <div
+                      className={`w-12 h-12 rounded-full flex items-center justify-center transition-all duration-300 ${
+                        isCompleted
+                          ? "bg-green-500 text-white"
+                          : isActive
+                            ? "bg-blue-600 text-white shadow-lg scale-110"
+                            : "bg-gray-200 text-gray-600"
+                      }`}
+                    >
+                      {isCompleted ? <CheckCircle className="h-6 w-6" /> : <Icon className="h-6 w-6" />}
+                    </div>
+                    <span className={`text-sm mt-2 font-medium ${isActive ? "text-blue-600" : "text-gray-600"}`}>
+                      {step.title}
+                    </span>
+                  </div>
 
-            <div className="flex flex-col items-center">
-              <div
-                className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                  currentStep >= 2 ? "bg-blue-600 text-white" : "bg-gray-200 text-gray-600"
-                }`}
-              >
-                <FileText className="h-5 w-5" />
-              </div>
-              <span className="text-sm mt-2 text-gray-600">Medical History</span>
-            </div>
-
-            <div className={`flex-1 h-1 mx-2 ${currentStep >= 3 ? "bg-blue-600" : "bg-gray-200"}`}></div>
-
-            <div className="flex flex-col items-center">
-              <div
-                className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                  currentStep >= 3 ? "bg-blue-600 text-white" : "bg-gray-200 text-gray-600"
-                }`}
-              >
-                <DollarSign className="h-5 w-5" />
-              </div>
-              <span className="text-sm mt-2 text-gray-600">Budget & Preferences</span>
-            </div>
+                  {index < steps.length - 1 && (
+                    <div
+                      className={`flex-1 h-1 mx-4 transition-all duration-300 ${
+                        currentStep > step.number ? "bg-green-500" : "bg-gray-200"
+                      }`}
+                    />
+                  )}
+                </div>
+              )
+            })}
           </div>
         </div>
 
-        <div className="max-w-3xl mx-auto">
-          <div className="bg-white rounded-2xl shadow-xl overflow-hidden">
-            {isSubmitted ? (
-              <div className="p-8 text-center">
-                <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-6">
-                  <Check className="h-8 w-8 text-green-600" />
+        <div className="max-w-4xl mx-auto">
+          <div className="bg-white rounded-3xl shadow-xl p-8 border border-gray-100">
+            {/* Step 1: Personal Information */}
+            {currentStep === 1 && (
+              <div className="space-y-8">
+                <div className="flex items-center space-x-3 mb-8">
+                  <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center">
+                    <User className="h-6 w-6 text-blue-600" />
+                  </div>
+                  <h2 className="text-2xl font-bold text-gray-900">Personal Information</h2>
                 </div>
-                <h2 className="text-2xl font-bold text-gray-900 mb-2">Information Submitted Successfully!</h2>
-                <p className="text-gray-600 mb-6">
-                  Your patient data has been received. Redirecting to recommendations...
-                </p>
-                <div className="w-full bg-gray-200 rounded-full h-2.5 mb-6">
-                  <div className="bg-green-600 h-2.5 rounded-full animate-pulse" style={{ width: "100%" }}></div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">First Name *</label>
+                    <input
+                      type="text"
+                      value={formData.firstName}
+                      onChange={(e) => handleInputChange("firstName", e.target.value)}
+                      className={`w-full px-4 py-3 border-2 rounded-xl transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-blue-500/20 ${
+                        errors.firstName ? "border-red-400 bg-red-50" : "border-gray-200 focus:border-blue-500"
+                      }`}
+                      placeholder="Enter first name"
+                    />
+                    {errors.firstName && (
+                      <p className="mt-1 text-sm text-red-600 flex items-center">
+                        <AlertCircle className="h-4 w-4 mr-1" />
+                        {errors.firstName}
+                      </p>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Last Name *</label>
+                    <input
+                      type="text"
+                      value={formData.lastName}
+                      onChange={(e) => handleInputChange("lastName", e.target.value)}
+                      className={`w-full px-4 py-3 border-2 rounded-xl transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-blue-500/20 ${
+                        errors.lastName ? "border-red-400 bg-red-50" : "border-gray-200 focus:border-blue-500"
+                      }`}
+                      placeholder="Enter last name"
+                    />
+                    {errors.lastName && (
+                      <p className="mt-1 text-sm text-red-600 flex items-center">
+                        <AlertCircle className="h-4 w-4 mr-1" />
+                        {errors.lastName}
+                      </p>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Age *</label>
+                    <input
+                      type="number"
+                      value={formData.age}
+                      onChange={(e) => handleInputChange("age", e.target.value)}
+                      min="1"
+                      max="120"
+                      className={`w-full px-4 py-3 border-2 rounded-xl transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-blue-500/20 ${
+                        errors.age ? "border-red-400 bg-red-50" : "border-gray-200 focus:border-blue-500"
+                      }`}
+                      placeholder="Enter age"
+                    />
+                    {errors.age && (
+                      <p className="mt-1 text-sm text-red-600 flex items-center">
+                        <AlertCircle className="h-4 w-4 mr-1" />
+                        {errors.age}
+                      </p>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Gender *</label>
+                    <select
+                      value={formData.gender}
+                      onChange={(e) => handleInputChange("gender", e.target.value)}
+                      className={`w-full px-4 py-3 border-2 rounded-xl transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-blue-500/20 ${
+                        errors.gender ? "border-red-400 bg-red-50" : "border-gray-200 focus:border-blue-500"
+                      }`}
+                    >
+                      <option value="">Select gender</option>
+                      <option value="male">Male</option>
+                      <option value="female">Female</option>
+                      <option value="other">Other</option>
+                      <option value="prefer-not-to-say">Prefer not to say</option>
+                    </select>
+                    {errors.gender && (
+                      <p className="mt-1 text-sm text-red-600 flex items-center">
+                        <AlertCircle className="h-4 w-4 mr-1" />
+                        {errors.gender}
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Ethnicity (Optional)</label>
+                  <input
+                    type="text"
+                    value={formData.ethnicity}
+                    onChange={(e) => handleInputChange("ethnicity", e.target.value)}
+                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-blue-500/20 focus:border-blue-500"
+                    placeholder="e.g., Caucasian, Asian, Hispanic, African American"
+                  />
+                  <p className="mt-1 text-sm text-gray-500">
+                    This information helps our AI provide more accurate recommendations based on genetic factors
+                  </p>
                 </div>
               </div>
-            ) : (
-              <div className="p-8">
-                {currentStep === 1 && (
-                  <>
-                    <h2 className="text-2xl font-semibold text-gray-900 mb-6">Personal Information</h2>
+            )}
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-                      <div>
-                        <label htmlFor="firstName" className="block text-sm font-medium text-gray-700 mb-1">
-                          First Name*
-                        </label>
-                        <input
-                          type="text"
-                          id="firstName"
-                          name="firstName"
-                          value={formData.firstName}
-                          onChange={handleChange}
-                          className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${
-                            errors.firstName ? "border-red-500" : "border-gray-300"
-                          }`}
-                        />
-                        {errors.firstName && (
-                          <p className="mt-1 text-sm text-red-600 flex items-center">
-                            <AlertCircle className="h-4 w-4 mr-1" />
-                            {errors.firstName}
-                          </p>
-                        )}
-                      </div>
+            {/* Step 2: Medical History */}
+            {currentStep === 2 && (
+              <div className="space-y-8">
+                <div className="flex items-center space-x-3 mb-8">
+                  <div className="w-10 h-10 bg-red-100 rounded-xl flex items-center justify-center">
+                    <Heart className="h-6 w-6 text-red-600" />
+                  </div>
+                  <h2 className="text-2xl font-bold text-gray-900">Medical History</h2>
+                </div>
 
-                      <div>
-                        <label htmlFor="lastName" className="block text-sm font-medium text-gray-700 mb-1">
-                          Last Name*
-                        </label>
-                        <input
-                          type="text"
-                          id="lastName"
-                          name="lastName"
-                          value={formData.lastName}
-                          onChange={handleChange}
-                          className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${
-                            errors.lastName ? "border-red-500" : "border-gray-300"
-                          }`}
-                        />
-                        {errors.lastName && (
-                          <p className="mt-1 text-sm text-red-600 flex items-center">
-                            <AlertCircle className="h-4 w-4 mr-1" />
-                            {errors.lastName}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-                      <div>
-                        <label htmlFor="age" className="block text-sm font-medium text-gray-700 mb-1">
-                          Age*
-                        </label>
-                        <input
-                          type="number"
-                          id="age"
-                          name="age"
-                          value={formData.age}
-                          onChange={handleChange}
-                          min="1"
-                          max="120"
-                          className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${
-                            errors.age ? "border-red-500" : "border-gray-300"
-                          }`}
-                        />
-                        {errors.age && (
-                          <p className="mt-1 text-sm text-red-600 flex items-center">
-                            <AlertCircle className="h-4 w-4 mr-1" />
-                            {errors.age}
-                          </p>
-                        )}
-                      </div>
-
-                      <div>
-                        <label htmlFor="gender" className="block text-sm font-medium text-gray-700 mb-1">
-                          Gender*
-                        </label>
-                        <select
-                          id="gender"
-                          name="gender"
-                          value={formData.gender}
-                          onChange={handleChange}
-                          className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${
-                            errors.gender ? "border-red-500" : "border-gray-300"
-                          }`}
-                        >
-                          <option value="">Select gender</option>
-                          <option value="male">Male</option>
-                          <option value="female">Female</option>
-                          <option value="other">Other</option>
-                          <option value="prefer-not-to-say">Prefer not to say</option>
-                        </select>
-                        {errors.gender && (
-                          <p className="mt-1 text-sm text-red-600 flex items-center">
-                            <AlertCircle className="h-4 w-4 mr-1" />
-                            {errors.gender}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="mb-6">
-                      <label htmlFor="ethnicity" className="block text-sm font-medium text-gray-700 mb-1">
-                        Ethnicity (Optional)
-                      </label>
-                      <input
-                        type="text"
-                        id="ethnicity"
-                        name="ethnicity"
-                        value={formData.ethnicity}
-                        onChange={handleChange}
-                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                      />
-                      <p className="mt-1 text-xs text-gray-500">
-                        This information helps our AI provide more accurate recommendations based on genetic factors.
-                      </p>
-                    </div>
-                  </>
-                )}
-
-                {currentStep === 2 && (
-                  <>
-                    <h2 className="text-2xl font-semibold text-gray-900 mb-6">Medical History</h2>
-
-                    <div className="mb-6">
-                      <label htmlFor="medicalHistory" className="block text-sm font-medium text-gray-700 mb-1">
-                        Medical History*
-                      </label>
-                      <textarea
-                        id="medicalHistory"
-                        name="medicalHistory"
-                        value={formData.medicalHistory}
-                        onChange={handleChange}
-                        rows={4}
-                        placeholder="Include relevant medical conditions, medications, etc."
-                        className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${
-                          errors.medicalHistory ? "border-red-500" : "border-gray-300"
-                        }`}
-                      ></textarea>
-                      {errors.medicalHistory && (
-                        <p className="mt-1 text-sm text-red-600 flex items-center">
-                          <AlertCircle className="h-4 w-4 mr-1" />
-                          {errors.medicalHistory}
-                        </p>
-                      )}
-                    </div>
-
-                    <div className="mb-6">
-                      <label htmlFor="allergies" className="block text-sm font-medium text-gray-700 mb-1">
-                        Allergies (Optional)
-                      </label>
-                      <textarea
-                        id="allergies"
-                        name="allergies"
-                        value={formData.allergies}
-                        onChange={handleChange}
-                        rows={2}
-                        placeholder="List any known allergies to materials or medications"
-                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                      ></textarea>
-                    </div>
-
-                    <div className="mb-6">
-                      <label htmlFor="previousTreatments" className="block text-sm font-medium text-gray-700 mb-1">
-                        Previous Dental Treatments (Optional)
-                      </label>
-                      <textarea
-                        id="previousTreatments"
-                        name="previousTreatments"
-                        value={formData.previousTreatments}
-                        onChange={handleChange}
-                        rows={3}
-                        placeholder="Describe any previous dental work or prosthetics"
-                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                      ></textarea>
-                    </div>
-                  </>
-                )}
-
-                {currentStep === 3 && (
-                  <>
-                    <h2 className="text-2xl font-semibold text-gray-900 mb-6">Budget & Preferences</h2>
-
-                    <div className="mb-6">
-                      <label htmlFor="budget" className="block text-sm font-medium text-gray-700 mb-1">
-                        Budget Range (Optional)
-                      </label>
-                      <div className="relative">
-                        <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                          <span className="text-gray-500">$</span>
-                        </div>
-                        <input
-                          type="text"
-                          id="budget"
-                          name="budget"
-                          value={formData.budget}
-                          onChange={handleChange}
-                          placeholder="Enter maximum budget"
-                          className={`w-full pl-8 pr-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${
-                            errors.budget ? "border-red-500" : "border-gray-300"
-                          }`}
-                        />
-                      </div>
-                      {errors.budget && (
-                        <p className="mt-1 text-sm text-red-600 flex items-center">
-                          <AlertCircle className="h-4 w-4 mr-1" />
-                          {errors.budget}
-                        </p>
-                      )}
-                      <p className="mt-1 text-xs text-gray-500">
-                        This helps our AI recommend prosthetic options within your financial constraints.
-                      </p>
-                    </div>
-
-                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
-                      <div className="flex">
-                        <div className="flex-shrink-0">
-                          <Shield className="h-5 w-5 text-blue-600" />
-                        </div>
-                        <div className="ml-3">
-                          <h3 className="text-sm font-medium text-blue-800">Data Privacy Notice</h3>
-                          <div className="mt-2 text-sm text-blue-700">
-                            <p>
-                              All patient information is encrypted and securely stored. Your data will only be used to
-                              generate prosthetic recommendations and will not be shared with third parties.
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </>
-                )}
-
-                <div className="flex justify-between mt-8">
-                  {currentStep > 1 ? (
-                    <button
-                      onClick={handlePrevStep}
-                      className="px-6 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
-                    >
-                      Back
-                    </button>
-                  ) : (
-                    <Link
-                      href="/upload"
-                      className="px-6 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
-                    >
-                      Back to Upload
-                    </Link>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Medical History *</label>
+                  <textarea
+                    value={formData.medicalHistory}
+                    onChange={(e) => handleInputChange("medicalHistory", e.target.value)}
+                    rows={4}
+                    className={`w-full px-4 py-3 border-2 rounded-xl transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-blue-500/20 resize-none ${
+                      errors.medicalHistory ? "border-red-400 bg-red-50" : "border-gray-200 focus:border-blue-500"
+                    }`}
+                    placeholder="Include relevant medical conditions, chronic diseases, surgeries, etc."
+                  />
+                  {errors.medicalHistory && (
+                    <p className="mt-1 text-sm text-red-600 flex items-center">
+                      <AlertCircle className="h-4 w-4 mr-1" />
+                      {errors.medicalHistory}
+                    </p>
                   )}
+                </div>
 
-                  {currentStep < 3 ? (
-                    <button
-                      onClick={handleNextStep}
-                      className="px-6 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-lg hover:shadow-lg transition-shadow flex items-center"
-                    >
-                      Next
-                      <ChevronRight className="ml-2 h-5 w-5" />
-                    </button>
-                  ) : (
-                    <button
-                      onClick={handleSubmit}
-                      disabled={isSubmitting}
-                      className="px-6 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-lg hover:shadow-lg transition-shadow flex items-center disabled:opacity-50"
-                    >
-                      {isSubmitting ? (
-                        <>
-                          <svg
-                            className="animate-spin -ml-1 mr-3 h-5 w-5 text-white"
-                            xmlns="http://www.w3.org/2000/svg"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                          >
-                            <circle
-                              className="opacity-25"
-                              cx="12"
-                              cy="12"
-                              r="10"
-                              stroke="currentColor"
-                              strokeWidth="4"
-                            ></circle>
-                            <path
-                              className="opacity-75"
-                              fill="currentColor"
-                              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                            ></path>
-                          </svg>
-                          Processing...
-                        </>
-                      ) : (
-                        <>
-                          Submit
-                          <Check className="ml-2 h-5 w-5" />
-                        </>
-                      )}
-                    </button>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Current Medications (Optional)</label>
+                  <textarea
+                    value={formData.currentMedications}
+                    onChange={(e) => handleInputChange("currentMedications", e.target.value)}
+                    rows={3}
+                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-blue-500/20 focus:border-blue-500 resize-none"
+                    placeholder="List all current medications, dosages, and frequency"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Allergies (Optional)</label>
+                  <textarea
+                    value={formData.allergies}
+                    onChange={(e) => handleInputChange("allergies", e.target.value)}
+                    rows={2}
+                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-blue-500/20 focus:border-blue-500 resize-none"
+                    placeholder="List any known allergies to materials, medications, or substances"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Smoking Status *</label>
+                  <select
+                    value={formData.smokingStatus}
+                    onChange={(e) => handleInputChange("smokingStatus", e.target.value)}
+                    className={`w-full px-4 py-3 border-2 rounded-xl transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-blue-500/20 ${
+                      errors.smokingStatus ? "border-red-400 bg-red-50" : "border-gray-200 focus:border-blue-500"
+                    }`}
+                  >
+                    <option value="">Select smoking status</option>
+                    <option value="never">Never smoked</option>
+                    <option value="former">Former smoker</option>
+                    <option value="current">Current smoker</option>
+                    <option value="occasional">Occasional smoker</option>
+                  </select>
+                  {errors.smokingStatus && (
+                    <p className="mt-1 text-sm text-red-600 flex items-center">
+                      <AlertCircle className="h-4 w-4 mr-1" />
+                      {errors.smokingStatus}
+                    </p>
+                  )}
+                  <p className="mt-1 text-sm text-gray-500">
+                    Smoking status affects healing and prosthetic success rates
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Step 3: Dental History */}
+            {currentStep === 3 && (
+              <div className="space-y-8">
+                <div className="flex items-center space-x-3 mb-8">
+                  <div className="w-10 h-10 bg-green-100 rounded-xl flex items-center justify-center">
+                    <Activity className="h-6 w-6 text-green-600" />
+                  </div>
+                  <h2 className="text-2xl font-bold text-gray-900">Dental History</h2>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Previous Dental Work *</label>
+                  <textarea
+                    value={formData.previousDentalWork}
+                    onChange={(e) => handleInputChange("previousDentalWork", e.target.value)}
+                    rows={4}
+                    className={`w-full px-4 py-3 border-2 rounded-xl transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-blue-500/20 resize-none ${
+                      errors.previousDentalWork ? "border-red-400 bg-red-50" : "border-gray-200 focus:border-blue-500"
+                    }`}
+                    placeholder="Describe any previous dental treatments, prosthetics, implants, crowns, bridges, etc."
+                  />
+                  {errors.previousDentalWork && (
+                    <p className="mt-1 text-sm text-red-600 flex items-center">
+                      <AlertCircle className="h-4 w-4 mr-1" />
+                      {errors.previousDentalWork}
+                    </p>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Oral Hygiene Rating *</label>
+                  <select
+                    value={formData.oralHygiene}
+                    onChange={(e) => handleInputChange("oralHygiene", e.target.value)}
+                    className={`w-full px-4 py-3 border-2 rounded-xl transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-blue-500/20 ${
+                      errors.oralHygiene ? "border-red-400 bg-red-50" : "border-gray-200 focus:border-blue-500"
+                    }`}
+                  >
+                    <option value="">Select oral hygiene level</option>
+                    <option value="excellent">Excellent - Brushes 2+ times daily, flosses regularly</option>
+                    <option value="good">Good - Brushes daily, occasional flossing</option>
+                    <option value="fair">Fair - Irregular brushing and flossing</option>
+                    <option value="poor">Poor - Minimal oral care</option>
+                  </select>
+                  {errors.oralHygiene && (
+                    <p className="mt-1 text-sm text-red-600 flex items-center">
+                      <AlertCircle className="h-4 w-4 mr-1" />
+                      {errors.oralHygiene}
+                    </p>
                   )}
                 </div>
               </div>
             )}
+
+            {/* Step 4: Preferences & Budget */}
+            {currentStep === 4 && (
+              <div className="space-y-8">
+                <div className="flex items-center space-x-3 mb-8">
+                  <div className="w-10 h-10 bg-purple-100 rounded-xl flex items-center justify-center">
+                    <DollarSign className="h-6 w-6 text-purple-600" />
+                  </div>
+                  <h2 className="text-2xl font-bold text-gray-900">Budget & Preferences</h2>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Budget Range (Optional)</label>
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                      <span className="text-gray-500">$</span>
+                    </div>
+                    <input
+                      type="text"
+                      value={formData.budget}
+                      onChange={(e) => handleInputChange("budget", e.target.value)}
+                      className="w-full pl-8 pr-4 py-3 border-2 border-gray-200 rounded-xl transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-blue-500/20 focus:border-blue-500"
+                      placeholder="Enter maximum budget"
+                    />
+                  </div>
+                  <p className="mt-1 text-sm text-gray-500">
+                    This helps our AI recommend prosthetic options within your financial constraints
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Insurance Provider (Optional)</label>
+                  <input
+                    type="text"
+                    value={formData.insuranceProvider}
+                    onChange={(e) => handleInputChange("insuranceProvider", e.target.value)}
+                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-blue-500/20 focus:border-blue-500"
+                    placeholder="Enter insurance provider name"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Treatment Preferences (Optional)
+                  </label>
+                  <textarea
+                    value={formData.treatmentPreferences}
+                    onChange={(e) => handleInputChange("treatmentPreferences", e.target.value)}
+                    rows={3}
+                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-blue-500/20 focus:border-blue-500 resize-none"
+                    placeholder="Any specific preferences for treatment approach, materials, timeline, etc."
+                  />
+                </div>
+
+                <div className="bg-blue-50 border border-blue-200 rounded-xl p-6">
+                  <div className="flex items-start space-x-3">
+                    <Shield className="h-6 w-6 text-blue-600 flex-shrink-0 mt-1" />
+                    <div>
+                      <h3 className="text-sm font-medium text-blue-800 mb-2">Data Privacy Notice</h3>
+                      <p className="text-sm text-blue-700">
+                        All patient information is encrypted and securely stored. Your data will only be used to
+                        generate prosthetic recommendations and will not be shared with third parties without consent.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Navigation Buttons */}
+            <div className="flex justify-between items-center mt-12 pt-8 border-t border-gray-200">
+              {currentStep > 1 ? (
+                <button
+                  onClick={handlePrevious}
+                  className="flex items-center space-x-2 px-6 py-3 border-2 border-gray-300 text-gray-700 rounded-xl font-semibold hover:border-gray-400 hover:bg-gray-50 transition-all duration-300"
+                >
+                  <ArrowLeft className="h-5 w-5" />
+                  <span>Previous</span>
+                </button>
+              ) : (
+                <Link
+                  href="/upload"
+                  className="flex items-center space-x-2 px-6 py-3 border-2 border-gray-300 text-gray-700 rounded-xl font-semibold hover:border-gray-400 hover:bg-gray-50 transition-all duration-300"
+                >
+                  <ArrowLeft className="h-5 w-5" />
+                  <span>Back to Upload</span>
+                </Link>
+              )}
+
+              {currentStep < 4 ? (
+                <button
+                  onClick={handleNext}
+                  className="flex items-center space-x-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-6 py-3 rounded-xl font-semibold shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-300"
+                >
+                  <span>Next Step</span>
+                  <ArrowRight className="h-5 w-5" />
+                </button>
+              ) : (
+                <button
+                  onClick={handleSubmit}
+                  disabled={isGeneratingRecommendations}
+                  className="flex items-center space-x-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-6 py-3 rounded-xl font-semibold shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
+                >
+                  {isGeneratingRecommendations ? (
+                    <>
+                      <Loader2 className="h-5 w-5 animate-spin" />
+                      <span>Generating...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>Generate Recommendations</span>
+                      <CheckCircle className="h-5 w-5" />
+                    </>
+                  )}
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Progress Indicator */}
+          <div className="mt-8 bg-white rounded-2xl shadow-lg p-6 border border-gray-100">
+            <h3 className="text-lg font-bold text-gray-800 mb-4">Progress Overview</h3>
+            <div className="space-y-3">
+              <div className="flex items-center">
+                <CheckCircle className="h-5 w-5 text-green-500 mr-3" />
+                <span className="text-gray-700">X-ray uploaded and analyzed</span>
+              </div>
+              <div className="flex items-center">
+                <div
+                  className={`w-5 h-5 rounded-full mr-3 flex items-center justify-center ${
+                    currentStep >= 1 ? "bg-blue-500" : "bg-gray-300"
+                  }`}
+                >
+                  {isSubmitted ? (
+                    <CheckCircle className="h-3 w-3 text-white" />
+                  ) : (
+                    <div className="w-2 h-2 bg-white rounded-full" />
+                  )}
+                </div>
+                <span className={currentStep >= 1 ? "text-gray-700" : "text-gray-400"}>
+                  Patient data collection {isSubmitted && "(Complete)"}
+                </span>
+              </div>
+              <div className="flex items-center">
+                <div className="w-5 h-5 border-2 border-gray-300 rounded-full mr-3" />
+                <span className="text-gray-400">AI recommendation generation</span>
+              </div>
+              <div className="flex items-center">
+                <div className="w-5 h-5 border-2 border-gray-300 rounded-full mr-3" />
+                <span className="text-gray-400">Report generation</span>
+              </div>
+            </div>
           </div>
         </div>
       </div>

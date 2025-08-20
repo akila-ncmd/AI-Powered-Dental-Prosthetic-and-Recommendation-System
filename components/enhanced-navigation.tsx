@@ -3,148 +3,107 @@
 import { useState, useEffect } from "react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { Menu, X, SmileIcon as Tooth } from "lucide-react"
+import { Brain, Menu, X, Home, Upload, User, FileText, BarChart3 } from "lucide-react"
 
-export default function EnhancedNavigation() {
+export function EnhancedNavigation() {
   const [isOpen, setIsOpen] = useState(false)
   const [scrolled, setScrolled] = useState(false)
   const pathname = usePathname()
 
   useEffect(() => {
     const handleScroll = () => {
-      if (window.scrollY > 10) {
-        setScrolled(true)
-      } else {
-        setScrolled(false)
-      }
+      setScrolled(window.scrollY > 20)
     }
-
     window.addEventListener("scroll", handleScroll)
-    return () => {
-      window.removeEventListener("scroll", handleScroll)
-    }
+    return () => window.removeEventListener("scroll", handleScroll)
   }, [])
 
-  const navLinks = [
-    { name: "Home", href: "/" },
-    { name: "Upload X-Ray", href: "/upload" },
-    { name: "Patient Data", href: "/patient-data" },
-    { name: "Recommendations", href: "/recommendations" },
-    { name: "Report", href: "/report" },
+  const navigation = [
+    { name: "Home", href: "/", icon: Home },
+    { name: "Upload X-Ray", href: "/upload", icon: Upload },
+    { name: "Patient Data", href: "/patient-data", icon: User },
+    { name: "Recommendations", href: "/recommendations", icon: BarChart3 },
+    { name: "Report", href: "/report", icon: FileText },
   ]
 
   return (
     <nav
-      className={`fixed w-full z-50 transition-all duration-300 ${
-        scrolled ? "bg-white/80 backdrop-blur-md shadow-md py-3" : "bg-transparent py-5"
+      className={`fixed top-0 left-0 right-0 z-50 transition-all duration-300 ${
+        scrolled ? "bg-white/95 backdrop-blur-md shadow-lg border-b border-gray-200" : "bg-white/90 backdrop-blur-sm"
       }`}
     >
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex justify-between items-center">
-          <div className="flex items-center">
-            <Link href="/" className="flex items-center space-x-2">
-              <div className="relative w-10 h-10 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-lg flex items-center justify-center shadow-lg group">
-                <Tooth className="w-6 h-6 text-white group-hover:scale-110 transition-transform" />
-                <div className="absolute -inset-0.5 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-lg blur opacity-30 group-hover:opacity-50 transition-opacity"></div>
-              </div>
-              <div>
-                <span className="text-xl font-bold text-gray-900">DentalAI</span>
-                <span className="text-xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
-                  Pro
-                </span>
-              </div>
-            </Link>
-          </div>
+        <div className="flex justify-between items-center h-16">
+          {/* Logo */}
+          <Link href="/" className="flex items-center space-x-3 group">
+            <div className="w-10 h-10 bg-gradient-to-br from-blue-600 to-indigo-600 rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
+              <Brain className="h-6 w-6 text-white" />
+            </div>
+            <div className="hidden sm:block">
+              <span className="text-xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
+                DentalAI Pro
+              </span>
+            </div>
+          </Link>
 
           {/* Desktop Navigation */}
           <div className="hidden md:flex items-center space-x-1">
-            {navLinks.map((link) => {
-              const isActive = pathname === link.href
+            {navigation.map((item) => {
+              const Icon = item.icon
+              const isActive = pathname === item.href
               return (
                 <Link
-                  key={link.name}
-                  href={link.href}
-                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
+                  key={item.name}
+                  href={item.href}
+                  className={`flex items-center space-x-2 px-4 py-2 rounded-xl font-medium transition-all duration-300 ${
                     isActive
-                      ? "bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-md"
-                      : "text-gray-700 hover:bg-gray-100"
+                      ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg"
+                      : "text-gray-600 hover:text-blue-600 hover:bg-blue-50"
                   }`}
                 >
-                  {link.name}
+                  <Icon className="h-4 w-4" />
+                  <span>{item.name}</span>
                 </Link>
               )
             })}
           </div>
 
-          <div className="hidden md:flex items-center space-x-4">
-            <Link
-              href="/login"
-              className="px-4 py-2 text-sm font-medium text-gray-700 hover:text-blue-600 transition-colors"
-            >
-              Log In
-            </Link>
-            <Link
-              href="/signup"
-              className="px-4 py-2 text-sm font-medium text-white bg-gradient-to-r from-blue-600 to-indigo-600 rounded-lg shadow-md hover:shadow-lg transition-shadow"
-            >
-              Sign Up
-            </Link>
-          </div>
-
-          {/* Mobile Navigation Toggle */}
-          <div className="md:hidden">
-            <button
-              onClick={() => setIsOpen(!isOpen)}
-              className="p-2 rounded-md text-gray-700 hover:text-blue-600 hover:bg-gray-100 focus:outline-none"
-            >
-              {isOpen ? <X className="h-6 w-6" /> : <Menu className="h-6 w-6" />}
-            </button>
-          </div>
+          {/* Mobile menu button */}
+          <button
+            onClick={() => setIsOpen(!isOpen)}
+            className="md:hidden p-2 rounded-lg text-gray-600 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+          >
+            {isOpen ? <X className="h-6 w-6" /> : <Menu className="h-6 w-6" />}
+          </button>
         </div>
-      </div>
 
-      {/* Mobile Navigation Menu */}
-      {isOpen && (
-        <div className="md:hidden bg-white border-t border-gray-200 shadow-lg animate-slide-up">
-          <div className="px-2 pt-2 pb-3 space-y-1">
-            {navLinks.map((link) => {
-              const isActive = pathname === link.href
-              return (
-                <Link
-                  key={link.name}
-                  href={link.href}
-                  className={`block px-3 py-2 rounded-md text-base font-medium ${
-                    isActive
-                      ? "bg-gradient-to-r from-blue-500 to-indigo-600 text-white"
-                      : "text-gray-700 hover:bg-gray-100"
-                  }`}
-                  onClick={() => setIsOpen(false)}
-                >
-                  {link.name}
-                </Link>
-              )
-            })}
-            <div className="pt-4 pb-3 border-t border-gray-200">
-              <div className="flex items-center px-3">
-                <Link
-                  href="/login"
-                  className="block px-3 py-2 rounded-md text-base font-medium text-gray-700 hover:bg-gray-100 w-full"
-                  onClick={() => setIsOpen(false)}
-                >
-                  Log In
-                </Link>
-                <Link
-                  href="/signup"
-                  className="block px-3 py-2 rounded-md text-base font-medium text-white bg-gradient-to-r from-blue-600 to-indigo-600 w-full text-center"
-                  onClick={() => setIsOpen(false)}
-                >
-                  Sign Up
-                </Link>
-              </div>
+        {/* Mobile Navigation */}
+        {isOpen && (
+          <div className="md:hidden py-4 border-t border-gray-200">
+            <div className="space-y-2">
+              {navigation.map((item) => {
+                const Icon = item.icon
+                const isActive = pathname === item.href
+                return (
+                  <Link
+                    key={item.name}
+                    href={item.href}
+                    onClick={() => setIsOpen(false)}
+                    className={`flex items-center space-x-3 px-4 py-3 rounded-xl font-medium transition-all duration-300 ${
+                      isActive
+                        ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white"
+                        : "text-gray-600 hover:text-blue-600 hover:bg-blue-50"
+                    }`}
+                  >
+                    <Icon className="h-5 w-5" />
+                    <span>{item.name}</span>
+                  </Link>
+                )
+              })}
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </nav>
   )
 }
