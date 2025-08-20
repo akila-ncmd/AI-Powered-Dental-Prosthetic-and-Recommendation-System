@@ -1,16 +1,13 @@
 import type React from "react"
-import type { Metadata } from "next"
-import { Inter } from "next/font/google"
 import "./globals.css"
-import { EnhancedNavigation } from "@/components/enhanced-navigation"
-import { ThemeProvider } from "@/components/theme-provider"
-import { Toaster } from "@/components/ui/toaster"
+import { Inter } from "next/font/google"
+import EnhancedNavigation from "@/components/enhanced-navigation"
 
 const inter = Inter({ subsets: ["latin"] })
 
-export const metadata: Metadata = {
-  title: "DentalAI Pro - AI-Powered Dental Prosthetic Recommendations",
-  description: "Advanced AI system for analyzing dental X-rays and generating personalized prosthetic recommendations",
+export const metadata = {
+  title: "AI-Powered Dental Prosthetic Recommendation System",
+  description: "Transform dental healthcare with AI-powered prosthetic recommendations",
     generator: 'v0.app'
 }
 
@@ -20,13 +17,12 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="en">
       <body className={inter.className}>
-        <ThemeProvider attribute="class" defaultTheme="light" enableSystem disableTransitionOnChange>
-          <EnhancedNavigation />
-          <main>{children}</main>
-          <Toaster />
-        </ThemeProvider>
+        <EnhancedNavigation />
+        <main className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50/30 to-indigo-50/20 pt-16">
+          {children}
+        </main>
       </body>
     </html>
   )
