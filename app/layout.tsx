@@ -11,6 +11,7 @@ export const metadata = {
     generator: 'v0.app'
 }
 
+
 export default function RootLayout({
   children,
 }: {
@@ -18,7 +19,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={inter.className}>
+      <body className={inter.className} suppressHydrationWarning={true}>
         <EnhancedNavigation />
         <main className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50/30 to-indigo-50/20 pt-16">
           {children}

@@ -1,23 +1,29 @@
 "use client"
 
-import type React from "react"
 import { useState, useRef, useCallback } from "react"
-import { Upload, ImageIcon, CheckCircle, X, FileImage, Zap, Shield, Clock } from "lucide-react"
+import { Upload, ImageIcon, CheckCircle, X, Zap, Shield, Clock } from "lucide-react"
 import Link from "next/link"
 
 export default function EnhancedUploadPage() {
-  const [selectedFile, setSelectedFile] = useState<File | null>(null)
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
-  const [isUploading, setIsUploading] = useState(false)
-  const [uploadProgress, setUploadProgress] = useState(0)
-  const [isDragOver, setIsDragOver] = useState(false)
-  const fileInputRef = useRef<HTMLInputElement>(null)
+    const [selectedFile, setSelectedFile] = useState<File | null>(null)
+    const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+    const [isUploading, setIsUploading] = useState(false)
+    const [uploadProgress, setUploadProgress] = useState(0)
+    const [isDragOver, setIsDragOver] = useState(false)
+    const [result, setResult] = useState<any>(null)
+    const [annotatedImageUrl, setAnnotatedImageUrl] = useState<string | null>(null)
+
+    const fileInputRef = useRef<HTMLInputElement>(null)
+
+   // Patient selection is now handled by PatientSelector component
 
   const handleFileSelect = useCallback((file: File) => {
     if (file && (file.type === "image/png" || file.type === "image/jpeg")) {
       setSelectedFile(file)
       const url = URL.createObjectURL(file)
       setPreviewUrl(url)
+      setResult(null)
+      setAnnotatedImageUrl(null)
     } else {
       alert("Please select a PNG or JPEG image file.")
     }
@@ -35,7 +41,7 @@ export default function EnhancedUploadPage() {
       const file = event.dataTransfer.files[0]
       if (file) handleFileSelect(file)
     },
-    [handleFileSelect],
+    [handleFileSelect]
   )
 
   const handleDragOver = useCallback((event: React.DragEvent) => {
@@ -51,12 +57,14 @@ export default function EnhancedUploadPage() {
   const removeFile = () => {
     setSelectedFile(null)
     setPreviewUrl(null)
+    setResult(null)
+    setAnnotatedImageUrl(null)
     if (fileInputRef.current) {
       fileInputRef.current.value = ""
     }
   }
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (!selectedFile) {
       alert("Please select an X-ray image first.")
       return
@@ -64,19 +72,78 @@ export default function EnhancedUploadPage() {
 
     setIsUploading(true)
     setUploadProgress(0)
+    setResult(null)
+    setAnnotatedImageUrl(null)
 
-    // Simulate upload progress
-    const interval = setInterval(() => {
-      setUploadProgress((prev) => {
-        if (prev >= 100) {
-          clearInterval(interval)
-          setIsUploading(false)
-          alert("X-ray uploaded successfully! AI analysis initiated.")
-          return 100
-        }
-        return prev + 10
+    try {
+      const formData = new FormData()
+      formData.append("file", selectedFile)
+
+      console.log("DEBUG: Starting AI analysis for file:", selectedFile.name)
+      console.log("DEBUG: File size:", selectedFile.size, "bytes")
+      console.log("DEBUG: File type:", selectedFile.type)
+
+      const response = await fetch(`/api/predict`, {
+        method: "POST",
+        body: formData,
+        // Add headers to ensure proper request
+        headers: {
+          // Don't set Content-Type for FormData - let browser set it with boundary
+        },
       })
-    }, 200)
+
+      console.log("DEBUG: Response status:", response.status)
+      console.log("DEBUG: Response headers:", Object.fromEntries(response.headers.entries()))
+
+      if (!response.ok) {
+        let errorMessage = `HTTP ${response.status}: ${response.statusText}`
+        try {
+          const errData = await response.json()
+          console.error("DEBUG: Error response data:", errData)
+          errorMessage = errData.detail || errorMessage
+        } catch (parseError) {
+          console.error("DEBUG: Could not parse error response:", parseError)
+          const textResponse = await response.text()
+          console.error("DEBUG: Raw error response:", textResponse)
+        }
+        throw new Error(errorMessage)
+      }
+
+      const data = await response.json()
+      console.log("DEBUG: AI analysis result:", data)
+      setResult(data)
+
+      // Store the annotated image URL in localStorage for the report page
+      if (data.output_image) {
+        console.log("DEBUG: Annotated image URL:", data.output_image)
+        setAnnotatedImageUrl(data.output_image)
+        localStorage.setItem("annotatedImage", data.output_image)
+      }
+
+      // Store the uploaded image URL in localStorage for the report page
+      if (selectedFile) {
+        const uploadedUrl = URL.createObjectURL(selectedFile)
+        localStorage.setItem("uploadedImage", uploadedUrl)
+      }
+
+      // Store detected conditions in localStorage for recommendations page
+      if (data.detected_conditions && Array.isArray(data.detected_conditions)) {
+        console.log("DEBUG: Storing detected conditions:", data.detected_conditions)
+        localStorage.setItem("detectedConditions", JSON.stringify(data.detected_conditions))
+      }
+
+      console.log("DEBUG: Analysis completed successfully!")
+    } catch (err) {
+      console.error("DEBUG: Upload error:", err)
+      const error = err as Error
+      console.error("DEBUG: Error type:", error.constructor.name)
+      console.error("DEBUG: Error message:", error.message)
+      console.error("DEBUG: Error stack:", error.stack)
+      alert(`Upload failed: ${error.message}`)
+    } finally {
+      setIsUploading(false)
+      setUploadProgress(100)
+    }
   }
 
   return (
@@ -97,9 +164,9 @@ export default function EnhancedUploadPage() {
           </p>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* Upload Section */}
-          <div className="lg:col-span-2">
+        <div className="grid grid-cols-1 gap-8">
+           {/* Upload Section */}
+           <div className="max-w-4xl mx-auto">
             <div className="glass-card rounded-3xl p-8 animate-scale-in">
               {/* Upload Area */}
               <div className="mb-8">
@@ -161,38 +228,28 @@ export default function EnhancedUploadPage() {
                     Image Preview
                   </h3>
                   <div className="glass-card rounded-2xl p-6">
-                    <div className="relative group">
-                      <img
-                        src={previewUrl || "/placeholder.svg"}
-                        alt="X-ray preview"
-                        className="max-w-full h-auto max-h-96 mx-auto rounded-xl shadow-2xl transition-transform duration-300 group-hover:scale-105"
-                      />
-                      <div className="absolute inset-0 bg-gradient-to-t from-black/20 to-transparent rounded-xl opacity-0 group-hover:opacity-100 transition-opacity"></div>
-                    </div>
-                    <div className="mt-6 text-center">
-                      <div className="inline-flex items-center px-4 py-2 bg-blue-50 rounded-full">
-                        <FileImage className="h-4 w-4 text-blue-600 mr-2" />
-                        <span className="text-sm font-medium text-blue-800">
-                          {selectedFile?.name} • {((selectedFile?.size || 0) / 1024 / 1024).toFixed(2)} MB
-                        </span>
-                      </div>
-                    </div>
+                    <img
+                      src={previewUrl || "/placeholder.svg"}
+                      alt="X-ray preview"
+                      className="max-w-full h-auto max-h-96 mx-auto rounded-xl shadow-2xl transition-transform duration-300"
+                    />
                   </div>
                 </div>
               )}
 
-              {/* Progress Bar */}
-              {isUploading && (
+              {/* Annotated Result Section */}
+              {annotatedImageUrl && (
                 <div className="mb-8 animate-slide-up">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-medium text-blue-700">Processing X-Ray...</span>
-                    <span className="text-sm font-medium text-blue-700">{uploadProgress}%</span>
-                  </div>
-                  <div className="w-full bg-blue-100 rounded-full h-3">
-                    <div
-                      className="bg-gradient-to-r from-blue-500 to-blue-600 h-3 rounded-full transition-all duration-300 animate-pulse"
-                      style={{ width: `${uploadProgress}%` }}
-                    ></div>
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
+                    <CheckCircle className="h-5 w-5 mr-2 text-green-600" />
+                    AI-Detected Results
+                  </h3>
+                  <div className="glass-card rounded-2xl p-6 bg-white">
+                    <img
+                      src={annotatedImageUrl}
+                      alt="AI analyzed result"
+                      className="max-w-full h-auto max-h-[500px] mx-auto rounded-xl border-2 border-green-200 shadow-xl"
+                    />
                   </div>
                 </div>
               )}
@@ -221,7 +278,7 @@ export default function EnhancedUploadPage() {
                   href="/patient-data"
                   className="inline-flex items-center px-8 py-4 text-lg font-semibold text-blue-600 bg-white border-2 border-blue-200 rounded-2xl shadow-lg hover-lift transition-all duration-300"
                 >
-                  Next: Patient Data
+                  Next: Enter Patient Data
                   <CheckCircle className="h-6 w-6 ml-3" />
                 </Link>
               </div>
@@ -229,8 +286,7 @@ export default function EnhancedUploadPage() {
           </div>
 
           {/* Info Panel */}
-          <div className="lg:col-span-1 space-y-6">
-            {/* Guidelines */}
+           <div className="space-y-6">
             <div className="glass-card rounded-2xl p-6 animate-slide-up" style={{ animationDelay: "0.2s" }}>
               <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
                 <Shield className="h-5 w-5 mr-2 text-blue-600" />
@@ -251,7 +307,6 @@ export default function EnhancedUploadPage() {
               </ul>
             </div>
 
-            {/* AI Features */}
             <div className="glass-card rounded-2xl p-6 animate-slide-up" style={{ animationDelay: "0.4s" }}>
               <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
                 <Zap className="h-5 w-5 mr-2 text-blue-600" />
