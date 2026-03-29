@@ -42,31 +42,31 @@ async def lifespan(app: FastAPI):
     """Handle application startup and shutdown events"""
     # Startup
     logger = logging.getLogger(__name__)
-    logger.info("🚀 Starting Dental X-ray AI API...")
+    logger.info(" Starting Dental X-ray AI API...")
 
     try:
         await Database.connect_to_mongo()
 
         if Database.is_connected():
-            logger.info("✅ Database connection established")
+            logger.info(" Database connection established")
 
             # Initialize treatment knowledge base only if database is connected
             await recommendation_engine.initialize_treatment_knowledge_base_in_db()
-            logger.info("✅ Treatment knowledge base initialized")
+            logger.info(" Treatment knowledge base initialized")
         else:
-            logger.warning("⚠️  Database not available - continuing with limited functionality")
+            logger.warning("  Database not available - continuing with limited functionality")
 
     except Exception as e:
-        logger.error(f"❌ Failed to initialize database on startup: {e}")
-        logger.warning("⚠️  Continuing with limited functionality (no database)")
+        logger.error(f" Failed to initialize database on startup: {e}")
+        logger.warning("  Continuing with limited functionality (no database)")
         # Don't raise - allow the app to start without database
 
     yield
 
     # Shutdown
-    logger.info("🔄 Shutting down Dental X-ray AI API...")
+    logger.info(" Shutting down Dental X-ray AI API...")
     await Database.close_mongo_connection()
-    logger.info("✅ Database connection closed")
+    logger.info(" Database connection closed")
 
 # --------------------------
 # Custom JSON encoder for ObjectId

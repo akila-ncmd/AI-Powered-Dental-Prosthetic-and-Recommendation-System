@@ -68,7 +68,7 @@ export default function ReportPage() {
           setPatientId(patientId)
 
           // Fetch patient data
-          const patientResponse = await fetch(`http://127.0.0.1:8004/patients/${patientId}`)
+          const patientResponse = await fetch(`/api/patients/${patientId}`)
           if (!patientResponse.ok) {
             throw new Error("Failed to load patient data")
           }
@@ -98,7 +98,7 @@ export default function ReportPage() {
           }
 
           // Fetch recommendations
-          const recommendationsResponse = await fetch(`http://127.0.0.1:8004/recommendations/${patientId}`)
+          const recommendationsResponse = await fetch(`/api/recommendations/${patientId}`)
           if (recommendationsResponse.ok) {
             const recs = await recommendationsResponse.json()
             const formattedRecs = recs.map((r: any) => ({
@@ -144,8 +144,39 @@ export default function ReportPage() {
     try {
       console.log("DEBUG: Generating PDF for patient:", patientId)
 
-      const response = await fetch(`http://localhost:5000/generate-report/${patientId}`, {
-        method: "GET",
+      // Convert blob URLs to base64
+      let uploadedImageData = null
+      if (uploadedImage && uploadedImage.startsWith('blob:')) {
+        console.log("DEBUG: Converting uploaded image blob to base64")
+        uploadedImageData = await getBase64FromBlobUrl(uploadedImage)
+      } else {
+        uploadedImageData = uploadedImage
+      }
+
+      let annotatedImageData = null
+      if (annotatedImage && annotatedImage.startsWith('blob:')) {
+        console.log("DEBUG: Converting annotated image blob to base64")
+        annotatedImageData = await getBase64FromBlobUrl(annotatedImage)
+      } else {
+        annotatedImageData = annotatedImage
+      }
+
+      const payload = {
+        patientData,
+        detectedConditions,
+        recommendations,
+        uploadedImageData,
+        annotatedImage: annotatedImageData
+      }
+
+      console.log("DEBUG: Payload prepared", { patientData, detectedConditions: detectedConditions.length, recommendations: recommendations.length, hasUploaded: !!uploadedImageData, hasAnnotated: !!annotatedImageData })
+
+      const response = await fetch(`/api/pdf/generate-report/${patientId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(payload)
       })
 
       if (!response.ok) {
@@ -159,7 +190,8 @@ export default function ReportPage() {
       const a = document.createElement("a")
       a.href = url
 
-      // Sanitize patient name for filename
+      // The backend sets the filename, so no need to set a.download
+      // But to be safe, can set it
       const safeName = sanitizeFilename(patientData.name)
       a.download = `DentalAI_Report_${safeName}.pdf`
 

@@ -36,24 +36,15 @@ class Database:
             return
 
         try:
-            # MongoDB Atlas credentials
-            username = "akila_user"
-            password = "WGH7Qd8@apUNh$z"
-            cluster = "cluster0.qwwrokd.mongodb.net"
+            # Secure Database Connection relying entirely on environment variables
+            connection_string = os.getenv("MONGODB_URL")
             database_name = "dental_ai"
+            
+            if not connection_string:
+                print("WARNING: MONGODB_URL is not set. Using blank fallback.")
+                connection_string = "mongodb://localhost:27017/dental_ai"
 
-            # URL encode password for special characters
-            encoded_password = quote_plus(password)
-
-            # MongoDB Atlas SRV connection string
-            # Format: mongodb+srv://username:password@cluster/database?options
-            connection_string = (
-                f"mongodb+srv://{username}:{encoded_password}@{cluster}/"
-                f"{database_name}?retryWrites=true&w=majority&appName=DentalAI&"
-                "serverSelectionTimeoutMS=5000&connectTimeoutMS=10000"
-            )
-
-            logger.info(f"Connecting to MongoDB Atlas: {connection_string.replace(encoded_password, '***')}")
+            logger.info(f"Connecting to MongoDB Atlas: {connection_string.split('@')[-1]}")
 
             # Create client with proper configuration
             cls._client = AsyncIOMotorClient(

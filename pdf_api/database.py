@@ -31,18 +31,18 @@ def connect_to_database():
         return True
 
     try:
-        # URL encode password for special characters
-        encoded_password = quote_plus(password)
+        import os
+        from urllib.parse import quote_plus
+        
+        # Secure Database Connection relying entirely on environment variables
+        connection_string = os.getenv("MONGODB_URL")
+        database_name = "dental_ai"
+        
+        if not connection_string:
+            print("WARNING: MONGODB_URL is not set. Please set it in your local environment or Hugging Face Secrets.")
+            print("To run locally, create a .env file with MONGODB_URL=mongodb+srv://...")
 
-        # Use SRV connection string like the main backend
-        connection_string = (
-            f"mongodb+srv://{username}:{encoded_password}@{cluster}/"
-            f"{database_name}?retryWrites=true&w=majority&appName=DentalAI&"
-            "serverSelectionTimeoutMS=5000&connectTimeoutMS=10000"
-        )
-        print(f"Connecting to MongoDB Atlas: {connection_string.replace(encoded_password, '***')}")
-
-        print(f"Connecting to MongoDB Atlas: {connection_string.replace(encoded_password, '***')}")
+        print(f"Connecting to MongoDB Atlas: {connection_string.split('@')[-1]}")
 
         # Create MongoClient with timeout settings
         client = MongoClient(

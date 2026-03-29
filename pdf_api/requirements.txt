@@ -1,7 +1,9 @@
-Flask==2.3.3
-flask-cors==4.0.0
-reportlab==4.0.0
-requests==2.31.0
-pymongo==4.6.0
-dnspython==2.4.2
-Pillow==9.5.0
+Flask>=2.3.3
+flask-cors>=4.0.0
+reportlab>=4.0.0
+requests>=2.31.0
+pymongo>=4.6.0
+dnspython>=2.4.2
+Pillow>=10.0.0
+ultralytics>=8.0.196
+numpy>=1.26.0

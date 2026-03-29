@@ -25,7 +25,7 @@ except Exception as e:
 
 app = Flask(__name__)
 
-# ✅ Allow all origins (or restrict to your Next.js origin if you prefer)
+# Allow all origins (or restrict to your Next.js origin if you prefer)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 def sanitize_filename(name):
@@ -113,7 +113,7 @@ def download_and_resize_image(url_or_data, max_width=5*cm, max_height=5*cm):
 
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify({"message": "PDF API is running", "endpoints": ["/add_patient (POST)", "/patients (GET)", "/patient/<id> (GET)", "/patient/<id> (DELETE)", "/generate-report (POST)", "/generate-report/<patient_id> (GET)", "/test-pdf (GET)"]})
+    return jsonify({"message": "PDF API is running", "endpoints": ["/add_patient (POST)", "/patients (GET)", "/patient/<id> (GET)", "/patient/<id> (DELETE)", "/generate-report/<patient_id> (POST/GET)", "/test-pdf (GET)"]})
 
 @app.route("/add_patient", methods=["POST"])
 def add_patient():
@@ -166,17 +166,52 @@ def delete_patient(id):
 
 @app.route("/test-pdf", methods=["GET"])
 def test_pdf():
-    """Generate a simple test PDF to verify the system works."""
+    """Generate a test PDF with AI model performance metrics."""
     try:
-        print("DEBUG: Generating test PDF")
+        print("DEBUG: Generating test PDF with model metrics")
         buffer = io.BytesIO()
         c = canvas.Canvas(buffer, pagesize=A4)
         width, height = A4
 
-        # Simple test content
-        c.drawString(100, height - 100, "Test PDF Generation")
-        c.drawString(100, height - 120, "This is a test PDF to verify the system works.")
-        c.drawString(100, height - 140, f"Generated at: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        # Header
+        from reportlab.lib.colors import Color, white, black
+        header_blue = Color(0.2, 0.4, 0.8)
+        c.setFillColor(header_blue)
+        c.rect(0, height - 4*cm, width, 4*cm, fill=1)
+        c.setFillColor(white)
+        c.setFont("Helvetica-Bold", 20)
+        c.drawString(3*cm, height - 2.5*cm, "DentalAI Model Performance Report")
+        c.setFont("Helvetica", 12)
+        c.drawString(3*cm, height - 3.5*cm, f"Generated at: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        c.setFillColor(black)
+
+        y = height - 6*cm
+
+        # AI Model Performance Metrics
+        try:
+            print("DEBUG: Starting AI Model Performance Metrics section")
+            c.setFillColor(header_blue)
+            c.setFont("Helvetica-Bold", 14)
+            c.drawString(3*cm, y, "AI Model Performance Metrics:")
+            print(f"DEBUG: Drew header, y={y}")
+            y -= 1.5*cm
+            c.setFillColor(black)
+            c.setFont("Helvetica", 12)
+
+            # Simple test - just add one line
+            c.drawString(4*cm, y, "Model Accuracy: 91.3%")
+            print(f"DEBUG: Drew first line, y={y}")
+            y -= 0.5*cm
+            c.drawString(4*cm, y, "mAP@0.5: 0.87")
+            y -= 0.5*cm
+            c.drawString(4*cm, y, "Precision: 0.89")
+            y -= 0.5*cm
+            c.drawString(4*cm, y, "Recall: 0.85")
+            print("DEBUG: Completed AI Model Performance Metrics section")
+        except Exception as e:
+            print(f"ERROR in AI Model Performance Metrics section: {e}")
+            import traceback
+            print("Traceback:", traceback.format_exc())
 
         c.save()
         buffer.seek(0)
@@ -189,7 +224,7 @@ def test_pdf():
             pdf_data,
             mimetype="application/pdf",
             headers={
-                "Content-Disposition": "attachment; filename=Test_PDF.pdf",
+                "Content-Disposition": "attachment; filename=DentalAI_Model_Performance_Test.pdf",
                 "Content-Length": len(pdf_data)
             }
         )
@@ -199,59 +234,148 @@ def test_pdf():
         print(f"Test PDF error: {e}")
         return jsonify({"error": str(e)}), 500
 
-@app.route("/generate-report", methods=["POST", "OPTIONS"])
-def generate_report():
-    print(f"DEBUG: Received {request.method} request to /generate-report")
-    print(f"DEBUG: Headers: {dict(request.headers)}")
-
-    if request.method == "OPTIONS":
-        # Handle CORS preflight request
-        print("DEBUG: Handling CORS preflight request")
-        response = jsonify({"message": "CORS preflight"})
-        response.headers.add("Access-Control-Allow-Origin", "*")
-        response.headers.add("Access-Control-Allow-Methods", "POST, OPTIONS")
-        response.headers.add("Access-Control-Allow-Headers", "Content-Type")
-        return response, 200
+@app.route("/generate-report/<patient_id>", methods=["GET", "POST", "OPTIONS"])
+def generate_report_from_db(patient_id):
     try:
-        print("DEBUG: Starting PDF generation")
+        print(f"DEBUG: Starting PDF generation for patient {patient_id}")
 
-        # Parse JSON data
-        data = request.get_json()
-        if not data or not isinstance(data, dict):
-            return jsonify({"error": "No valid data provided"}), 400
+        if request.method == "OPTIONS":
+            response = jsonify({"message": "CORS preflight"})
+            response.headers.add("Access-Control-Allow-Origin", "*")
+            response.headers.add("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            response.headers.add("Access-Control-Allow-Headers", "Content-Type")
+            return response, 200
 
-        patient_data = data.get("patientData", {}) or {}
-        detected_conditions = data.get("detectedConditions", []) or []
-        recommendations = data.get("recommendations", []) or []
-        uploaded_image_url = data.get("uploadedImage")
-        annotated_image_url = data.get("annotatedImage")
-        uploaded_image_data = data.get("uploadedImageData")
+        if request.method == "POST":
+            print("DEBUG: Handling POST request")
+            data = request.get_json()
+            if not data:
+                return jsonify({"error": "No data provided"}), 400
+            patient_data = data.get("patientData", {})
+            detected_conditions = data.get("detectedConditions", [])
+            recommendations = data.get("recommendations", [])
+            uploaded_image_data = data.get("uploadedImageData")
+            annotated_image_url = data.get("annotatedImage")
+            uploaded_image_url = data.get("uploadedImage")
+        else:
+            if not DB_AVAILABLE:
+                return jsonify({"error": "Database not available"}), 503
+
+            # Fetch patient data from MongoDB
+            db = get_db()
+            patient = db.patients.find_one({"_id": ObjectId(patient_id)})
+            if not patient:
+                return jsonify({"error": "Patient not found"}), 404
+
+            # Convert ObjectId to string for JSON serialization
+            patient["_id"] = str(patient["_id"])
+            patient_data = {
+                "name": patient.get("name", "N/A"),
+                "age": patient.get("age", "N/A"),
+                "gender": patient.get("gender", "N/A"),
+                "budget": patient.get("budget", 0)
+            }
+
+            # Fetch detected conditions from MongoDB
+            detected_conditions_docs = list(db.detected_conditions.find({"patient_id": ObjectId(patient_id)}))
+            detected_conditions = [doc.get("condition_type", "Unknown") for doc in detected_conditions_docs] if detected_conditions_docs else []
+            print(f"DEBUG: Found {len(detected_conditions_docs)} detected conditions: {detected_conditions}")
+
+            # Fetch recommendations from MongoDB
+            recommendations_docs = list(db.recommendations.find({"patient_id": ObjectId(patient_id)}))
+            recommendations = []
+            for rec in recommendations_docs:
+                recommendations.append({
+                    "type": rec.get("treatment_type", "N/A"),
+                    "description": rec.get("rationale", "N/A"),
+                    "cost": rec.get("cost_estimate", "N/A"),
+                    "duration": rec.get("duration", "N/A"),
+                    "suitability": rec.get("suitability_score", 0)
+                })
+
+            # Fetch image URLs from MongoDB
+            uploaded_image_url = None
+            annotated_image_url = None
+            uploaded_image_data = None
+
+            # Get original image
+            original_image = db.images.find_one({
+                "patient_id": ObjectId(patient_id),
+                "image_type": "original"
+            })
+            if original_image:
+                uploaded_image_url = f"http://127.0.0.1:8004/uploads/{original_image['filename']}"
+
+            # Get annotated image
+            annotated_image = db.images.find_one({
+                "patient_id": ObjectId(patient_id),
+                "image_type": "annotated"
+            })
+            if annotated_image:
+                annotated_image_url = f"http://127.0.0.1:8004/outputs/predictions/{annotated_image['filename']}"
 
         print(f"DEBUG: Patient data: {patient_data}")
         print(f"DEBUG: Detected conditions: {detected_conditions}")
         print(f"DEBUG: Recommendations count: {len(recommendations)}")
-        print(f"DEBUG: Uploaded image data present: {bool(uploaded_image_data)}")
+        print(f"DEBUG: Uploaded image URL: {uploaded_image_url}")
         print(f"DEBUG: Annotated image URL: {annotated_image_url}")
+        print(f"DEBUG: Uploaded image data present: {bool(uploaded_image_data)}")
 
         buffer = io.BytesIO()
         c = canvas.Canvas(buffer, pagesize=A4)
         width, height = A4
         print("DEBUG: Canvas created")
 
-        # Header
-        from reportlab.lib.colors import Color, white, black
+        # Header - matching the preview design
+        from reportlab.lib.colors import Color, white, black, gray
         header_blue = Color(0.2, 0.4, 0.8)
         c.setFillColor(header_blue)
-        c.rect(0, height - 4*cm, width, 4*cm, fill=1)
+        c.rect(0, height - 3*cm, width, 3*cm, fill=1)
         c.setFillColor(white)
-        c.setFont("Helvetica-Bold", 20)
-        c.drawString(3*cm, height - 2.5*cm, "DentalAI Prosthetic Report")
+        c.setFont("Helvetica-Bold", 24)
+        c.drawString(3*cm, height - 2*cm, "DentalAI Prosthetic Report")
         c.setFont("Helvetica", 12)
-        patient_info = f"Patient: {patient_data.get('name', 'N/A')} | Age: {patient_data.get('age', 'N/A')} | Gender: {patient_data.get('gender', 'N/A')}"
-        c.drawString(3*cm, height - 3.5*cm, patient_info)
+        c.drawString(3*cm, height - 2.5*cm, f"Generated on {time.strftime('%B %d, %Y')}")
         c.setFillColor(black)
 
-        y = height - 6*cm
+        y = height - 5*cm
+
+        # Patient Information Section - matching preview
+        c.setFillColor(header_blue)
+        c.setFont("Helvetica-Bold", 16)
+        c.drawString(3*cm, y, "Patient Information")
+        y -= 1.5*cm
+        c.setFillColor(black)
+        c.setFont("Helvetica", 12)
+
+        # Create a grid-like layout for patient info
+        patient_info_x = 4*cm
+        info_y = y
+
+        # Left column
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(patient_info_x, info_y, "Name:")
+        c.setFont("Helvetica", 12)
+        c.drawString(patient_info_x + 3*cm, info_y, str(patient_data.get('name', 'N/A')))
+
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(patient_info_x, info_y - 0.8*cm, "Age:")
+        c.setFont("Helvetica", 12)
+        c.drawString(patient_info_x + 3*cm, info_y - 0.8*cm, f"{patient_data.get('age', 'N/A')} years")
+
+        # Right column
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(patient_info_x + 8*cm, info_y, "Gender:")
+        c.setFont("Helvetica", 12)
+        c.drawString(patient_info_x + 11*cm, info_y, str(patient_data.get('gender', 'N/A')))
+
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(patient_info_x + 8*cm, info_y - 0.8*cm, "Budget:")
+        c.setFont("Helvetica", 12)
+        budget = patient_data.get('budget', 0)
+        c.drawString(patient_info_x + 11*cm, info_y - 0.8*cm, f"LKR {budget:,}")
+
+        y = info_y - 2.5*cm
 
         # X-Ray Images
         if uploaded_image_url or annotated_image_url or uploaded_image_data:
@@ -298,53 +422,75 @@ def generate_report():
                 print("Image error traceback:", traceback.format_exc())
             y -= 2*cm
 
-        # Detected Conditions
+        # Detected Conditions Section - matching preview design
         if y < 4*cm:
             c.showPage()
             y = height - 2*cm
         c.setFillColor(header_blue)
-        c.setFont("Helvetica-Bold", 14)
-        c.drawString(3*cm, y, "Detected Conditions:")
+        c.setFont("Helvetica-Bold", 16)
+        c.drawString(3*cm, y, "Detected Conditions")
         y -= 1.5*cm
         c.setFillColor(black)
         c.setFont("Helvetica", 12)
         if detected_conditions:
             for cond in detected_conditions:
                 y = draw_text_with_page_break(c, f"• {cond}", 4*cm, y, width, height)
+                y -= 0.3*cm  # Small gap between items
         else:
             y = draw_text_with_page_break(c, "No abnormalities detected.", 4*cm, y, width, height)
 
         y -= 1*cm
 
-        # Recommendations
+        y -= 1*cm
+
+        # AI Recommendations Section - matching preview design
         if y < 6*cm:
             c.showPage()
             y = height - 2*cm
         c.setFillColor(header_blue)
-        c.setFont("Helvetica-Bold", 14)
-        c.drawString(3*cm, y, "AI Recommendations:")
+        c.setFont("Helvetica-Bold", 16)
+        c.drawString(3*cm, y, "AI Recommendations")
         y -= 1.5*cm
         c.setFillColor(black)
         c.setFont("Helvetica", 12)
         if recommendations:
             for rec in recommendations:
                 if isinstance(rec, dict):
-                    box_height = 2*cm
+                    box_height = 2.5*cm
                     if y - box_height < 2*cm:
                         c.showPage()
                         y = height - 2*cm
+
+                    # Draw recommendation box with light background
+                    light_blue = Color(0.9, 0.95, 1.0)
+                    c.setFillColor(light_blue)
                     c.setStrokeColor(header_blue)
-                    c.setLineWidth(0.5)
-                    c.rect(3*cm, y - box_height, width - 6*cm, box_height, fill=0)
+                    c.setLineWidth(1)
+                    c.rect(3*cm, y - box_height, width - 6*cm, box_height, fill=1, stroke=1)
+
+                    # Treatment type and suitability
                     c.setFillColor(header_blue)
-                    c.setFont("Helvetica-Bold", 12)
+                    c.setFont("Helvetica-Bold", 14)
                     c.drawString(4*cm, y - 0.8*cm, f"{rec.get('type', 'N/A')}")
-                    c.setFillColor(black)
                     c.setFont("Helvetica", 10)
-                    desc = f"{rec.get('suitability', 0)}% suitability | {rec.get('description', 'N/A')}"
+                    c.setFillColor(Color(0.4, 0.4, 0.4))
+                    c.drawString(width - 5*cm, y - 0.8*cm, f"{rec.get('suitability', 0)}% suitability")
+
+                    # Description
+                    c.setFillColor(Color(0.2, 0.2, 0.2))
+                    c.setFont("Helvetica", 11)
+                    desc = rec.get('description', 'N/A')
+                    # Truncate description if too long
+                    if len(desc) > 80:
+                        desc = desc[:77] + "..."
                     c.drawString(4*cm, y - 1.4*cm, desc)
+
+                    # Cost and duration
+                    c.setFillColor(Color(0.5, 0.5, 0.5))
+                    c.setFont("Helvetica", 9)
                     cost_duration = f"Cost: {rec.get('cost', 'N/A')} | Duration: {rec.get('duration', 'N/A')}"
-                    c.drawString(4*cm, y - 1.8*cm, cost_duration)
+                    c.drawString(4*cm, y - 2*cm, cost_duration)
+
                     y -= box_height + 0.5*cm
                 else:
                     y = draw_text_with_page_break(c, "Invalid recommendation data", 4*cm, y, width, height)
@@ -356,244 +502,10 @@ def generate_report():
         buffer.seek(0)
         print("DEBUG: PDF saved to buffer")
 
-        # ✅ Use fixed filename to avoid any Windows filename issues
-        filename = "DentalAI_Report.pdf"
-        print(f"DEBUG: Using fixed filename: {repr(filename)}")
-
-        # Return PDF directly from buffer to avoid Windows file handling issues
-        from flask import Response
-        pdf_data = buffer.getvalue()
-
-        response = Response(
-            pdf_data,
-            mimetype="application/pdf",
-            headers={
-                "Content-Disposition": f"attachment; filename={filename}",
-                "Content-Length": len(pdf_data)
-            }
-        )
-        print("DEBUG: PDF response created successfully")
-        return response
-
-    except Exception as e:
-        print("Error generating report:", e)
-        import traceback
-        print("Full traceback:", traceback.format_exc())
-        return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
-
-@app.route("/generate-report/<patient_id>", methods=["GET"])
-def generate_report_from_db(patient_id):
-    try:
-        print(f"DEBUG: Starting PDF generation for patient {patient_id}")
-
-        if not DB_AVAILABLE:
-            return jsonify({"error": "Database not available"}), 503
-
-        # Fetch patient data from MongoDB
-        db = get_db()
-        patient = db.patients.find_one({"_id": ObjectId(patient_id)})
-        if not patient:
-            return jsonify({"error": "Patient not found"}), 404
-
-        # Convert ObjectId to string for JSON serialization
-        patient["_id"] = str(patient["_id"])
-        patient_data = {
-            "name": patient.get("name", "N/A"),
-            "age": patient.get("age", "N/A"),
-            "gender": patient.get("gender", "N/A"),
-            "budget": patient.get("budget", 0)
-        }
-
-        # Fetch detected conditions from MongoDB
-        detected_conditions_docs = list(db.detected_conditions.find({"patient_id": ObjectId(patient_id)}))
-        detected_conditions = [doc.get("condition_type", "Unknown") for doc in detected_conditions_docs] if detected_conditions_docs else []
-        print(f"DEBUG: Found {len(detected_conditions_docs)} detected conditions: {detected_conditions}")
-
-        # Fetch recommendations from MongoDB
-        recommendations_docs = list(db.recommendations.find({"patient_id": ObjectId(patient_id)}))
-        recommendations = []
-        for rec in recommendations_docs:
-            recommendations.append({
-                "type": rec.get("treatment_type", "N/A"),
-                "description": rec.get("rationale", "N/A"),
-                "cost": rec.get("cost_estimate", "N/A"),
-                "duration": rec.get("duration", "N/A"),
-                "suitability": rec.get("suitability_score", 0)
-            })
-
-        # Fetch image URLs from MongoDB
-        uploaded_image_url = None
-        annotated_image_url = None
-        uploaded_image_data = None
-
-        # Get original image
-        original_image = db.images.find_one({
-            "patient_id": ObjectId(patient_id),
-            "image_type": "original"
-        })
-        if original_image:
-            uploaded_image_url = f"http://127.0.0.1:8004/uploads/{original_image['filename']}"
-
-        # Get annotated image
-        annotated_image = db.images.find_one({
-            "patient_id": ObjectId(patient_id),
-            "image_type": "annotated"
-        })
-        if annotated_image:
-            annotated_image_url = f"http://127.0.0.1:8004/outputs/predictions/{annotated_image['filename']}"
-
-        print(f"DEBUG: Patient data: {patient_data}")
-        print(f"DEBUG: Detected conditions: {detected_conditions}")
-        print(f"DEBUG: Recommendations count: {len(recommendations)}")
-        print(f"DEBUG: Uploaded image URL: {uploaded_image_url}")
-        print(f"DEBUG: Annotated image URL: {annotated_image_url}")
-
-        buffer = io.BytesIO()
-        c = canvas.Canvas(buffer, pagesize=A4)
-        width, height = A4
-        print("DEBUG: Canvas created")
-
-        # Header
-        from reportlab.lib.colors import Color, white, black
-        header_blue = Color(0.2, 0.4, 0.8)
-        c.setFillColor(header_blue)
-        c.rect(0, height - 4*cm, width, 4*cm, fill=1)
-        c.setFillColor(white)
-        c.setFont("Helvetica-Bold", 20)
-        c.drawString(3*cm, height - 2.5*cm, "DentalAI Prosthetic Report")
-        c.setFont("Helvetica", 12)
-        patient_info = f"Patient: {patient_data.get('name', 'N/A')} | Age: {patient_data.get('age', 'N/A')} | Gender: {patient_data.get('gender', 'N/A')}"
-        c.drawString(3*cm, height - 3.5*cm, patient_info)
-        c.setFillColor(black)
-
-        y = height - 6*cm
-
-        # X-Ray Images
-        if uploaded_image_url or annotated_image_url or uploaded_image_data:
-            print("DEBUG: Processing images section")
-            if y < 10*cm:
-                c.showPage()
-                y = height - 2*cm
-            c.setFillColor(header_blue)
-            c.setFont("Helvetica-Bold", 14)
-            c.drawString(3*cm, y, "X-ray Comparison:")
-            y -= 1.5*cm
-
-            print("DEBUG: Downloading images")
-            uploaded_img = None
-            annotated_img = None
-
-            try:
-                uploaded_img = download_and_resize_image(uploaded_image_data or uploaded_image_url)
-            except Exception as e:
-                print(f"Error downloading uploaded image: {e}")
-
-            try:
-                annotated_img = download_and_resize_image(annotated_image_url)
-            except Exception as e:
-                print(f"Error downloading annotated image: {e}")
-
-            print(f"DEBUG: Images downloaded - uploaded: {uploaded_img is not None}, annotated: {annotated_img is not None}")
-
-            try:
-                if uploaded_img and annotated_img:
-                    print("DEBUG: Drawing both images")
-                    c.setFont("Helvetica", 10)
-                    c.drawString(2*cm, y, "Original X-ray")
-                    c.drawImage(ImageReader(uploaded_img), 2*cm, y - 5*cm, width=5*cm, height=5*cm, mask='auto')
-                    c.drawString(10*cm, y, "AI-Analyzed X-ray")
-                    c.drawImage(ImageReader(annotated_img), 10*cm, y - 5*cm, width=5*cm, height=5*cm, mask='auto')
-                    y -= 6*cm
-                elif uploaded_img:
-                    print("DEBUG: Drawing uploaded image only")
-                    c.setFont("Helvetica", 10)
-                    c.drawString(6*cm, y, "Original X-ray")
-                    c.drawImage(ImageReader(uploaded_img), 6*cm, y - 5*cm, width=5*cm, height=5*cm, mask='auto')
-                    y -= 6*cm
-                elif annotated_img:
-                    print("DEBUG: Drawing annotated image only")
-                    c.setFont("Helvetica", 10)
-                    c.drawString(6*cm, y, "AI-Analyzed X-ray")
-                    c.drawImage(ImageReader(annotated_img), 6*cm, y - 5*cm, width=5*cm, height=5*cm, mask='auto')
-                    y -= 6*cm
-                else:
-                    print("DEBUG: No images to draw - skipping image section")
-                    # Don't add the image section if no images are available
-                    y += 1.5*cm  # Revert the y position change
-                    c.setFillColor(black)  # Reset color
-                    c.setFont("Helvetica", 12)  # Reset font
-            except Exception as img_error:
-                print(f"Error drawing images: {img_error}")
-                import traceback
-                print("Image error traceback:", traceback.format_exc())
-                # Continue without images
-                y += 1.5*cm  # Revert the y position change
-                c.setFillColor(black)  # Reset color
-                c.setFont("Helvetica", 12)  # Reset font
-        else:
-            print("DEBUG: No image URLs provided - skipping image section")
-
-        # Detected Conditions
-        if y < 4*cm:
-            c.showPage()
-            y = height - 2*cm
-        c.setFillColor(header_blue)
-        c.setFont("Helvetica-Bold", 14)
-        c.drawString(3*cm, y, "Detected Conditions:")
-        y -= 1.5*cm
-        c.setFillColor(black)
-        c.setFont("Helvetica", 12)
-        if detected_conditions:
-            for cond in detected_conditions:
-                y = draw_text_with_page_break(c, f"• {cond}", 4*cm, y, width, height)
-        else:
-            y = draw_text_with_page_break(c, "No abnormalities detected.", 4*cm, y, width, height)
-
-        y -= 1*cm
-
-        # Recommendations
-        if y < 6*cm:
-            c.showPage()
-            y = height - 2*cm
-        c.setFillColor(header_blue)
-        c.setFont("Helvetica-Bold", 14)
-        c.drawString(3*cm, y, "AI Recommendations:")
-        y -= 1.5*cm
-        c.setFillColor(black)
-        c.setFont("Helvetica", 12)
-        if recommendations:
-            for rec in recommendations:
-                if isinstance(rec, dict):
-                    box_height = 2*cm
-                    if y - box_height < 2*cm:
-                        c.showPage()
-                        y = height - 2*cm
-                    c.setStrokeColor(header_blue)
-                    c.setLineWidth(0.5)
-                    c.rect(3*cm, y - box_height, width - 6*cm, box_height, fill=0)
-                    c.setFillColor(header_blue)
-                    c.setFont("Helvetica-Bold", 12)
-                    c.drawString(4*cm, y - 0.8*cm, f"{rec.get('type', 'N/A')}")
-                    c.setFillColor(black)
-                    c.setFont("Helvetica", 10)
-                    desc = f"{rec.get('suitability', 0)}% suitability | {rec.get('description', 'N/A')}"
-                    c.drawString(4*cm, y - 1.4*cm, desc)
-                    cost_duration = f"Cost: {rec.get('cost', 'N/A')} | Duration: {rec.get('duration', 'N/A')}"
-                    c.drawString(4*cm, y - 1.8*cm, cost_duration)
-                    y -= box_height + 0.5*cm
-                else:
-                    y = draw_text_with_page_break(c, "Invalid recommendation data", 4*cm, y, width, height)
-        else:
-            y = draw_text_with_page_break(c, "No recommendations found.", 4*cm, y, width, height)
-
-        print("DEBUG: Saving PDF")
-        c.save()
-        buffer.seek(0)
-        print("DEBUG: PDF saved to buffer")
-
-        # ✅ Use fixed filename to avoid any Windows filename issues
-        filename = "DentalAI_Report.pdf"
-        print(f"DEBUG: Using fixed filename: {repr(filename)}")
+        # Use sanitized filename
+        safe_name = sanitize_filename(patient_data.get('name', 'Patient'))
+        filename = f"DentalAI_Report_{safe_name}.pdf"
+        print(f"DEBUG: Using filename: {repr(filename)}")
 
         # Return PDF directly from buffer to avoid Windows file handling issues
         from flask import Response

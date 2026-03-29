@@ -1,9 +1,8 @@
 "use client"
 
-import { useState } from "react"
-import { User, Save, ArrowRight, Loader2 } from "lucide-react"
+import { useState, useEffect } from "react"
+import { User, Save, ArrowRight, Loader2, FileText, ClipboardList, Shield, AlertTriangle, CheckCircle, Activity, ScanLine } from "lucide-react"
 import Link from "next/link"
-import { useEffect } from "react"
 
 export default function PatientDataPage() {
   const [formData, setFormData] = useState({
@@ -16,7 +15,6 @@ export default function PatientDataPage() {
     otherMedicalCondition: "",
     allergies: "",
     habits: [] as string[],
-    // pastDentalTreatments: [] as string[], // Removed as per requirements
     familyDentalHistory: "",
   })
 
@@ -26,7 +24,6 @@ export default function PatientDataPage() {
   const [patientId, setPatientId] = useState<string | null>(null)
   const [detectedConditions, setDetectedConditions] = useState<string[]>([])
 
-  // Fixed handleInputChange with proper type narrowing
   const handleInputChange = (
     e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
   ) => {
@@ -51,13 +48,13 @@ export default function PatientDataPage() {
   const validateForm = () => {
     const newErrors: Record<string, string> = {}
     if (!formData.name.trim()) newErrors.name = "Full Name is required"
-    if (!formData.nic.trim()) newErrors.nic = "NIC is required"
+    if (!formData.nic.trim()) newErrors.nic = "Patient ID/NIC is required"
     if (!formData.age || Number.parseInt(formData.age) < 1 || Number.parseInt(formData.age) > 120)
-      newErrors.age = "Please enter a valid age (1-120)"
+      newErrors.age = "Valid age (1-120) required"
     if (!formData.gender) newErrors.gender = "Gender is required"
-    if (!formData.budget || Number.parseInt(formData.budget) < 10000) newErrors.budget = "Select a valid budget"
+    if (!formData.budget || Number.parseInt(formData.budget) < 10000) newErrors.budget = "Valid budget required"
     if (formData.medicalConditions.length === 0 && !formData.otherMedicalCondition.trim())
-      newErrors.medicalConditions = "Select at least one medical condition or select 'None'"
+      newErrors.medicalConditions = "Select medical conditions or 'None'"
     setErrors(newErrors)
     return Object.keys(newErrors).length === 0
   }
@@ -69,7 +66,6 @@ export default function PatientDataPage() {
     setSubmitError(null)
 
     try {
-      // Prepare patient data for API
       const patientData = {
         name: formData.name,
         nic: formData.nic,
@@ -79,401 +75,276 @@ export default function PatientDataPage() {
         medical_conditions: formData.medicalConditions.includes("None") ? [] : formData.medicalConditions.filter(cond => cond !== "None"),
         other_medical_condition: formData.otherMedicalCondition,
         allergies: formData.allergies,
-        habits: formData.habits.filter(h => ["Smoking", "Alcohol", "Bruxism"].includes(h)),
+        habits: formData.habits.filter(h => ["Smoking", "Alcohol", "Bruxism", "Betel Chewing", "Coffee", "Tea"].includes(h)),
         family_dental_history: formData.familyDentalHistory,
       }
 
-      console.log("DEBUG: Sending patient data:", patientData)
-
-      const response = await fetch("http://127.0.0.1:8004/patients", {
+      const response = await fetch("/api/patients", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(patientData),
       })
 
-      console.log("DEBUG: Response status:", response.status)
-      console.log("DEBUG: Response ok:", response.ok)
+      const responseText = await response.text()
+      let responseData
+      try {
+        responseData = JSON.parse(responseText)
+      } catch (parseError) {
+        if (!response.ok) throw new Error(`HTTP ${response.status}: ${responseText || response.statusText}`)
+        else throw new Error("Invalid response from server")
+      }
 
       if (!response.ok) {
-        const errorText = await response.text()
-        console.error("DEBUG: Error response text:", errorText)
-        let errorData
-        try {
-          errorData = JSON.parse(errorText)
-        } catch (e) {
-          errorData = { detail: errorText }
-        }
-        throw new Error(errorData.detail || "Failed to save patient data")
+        const errorMessage = responseData.detail || responseData.message || `HTTP ${response.status}: ${response.statusText}`
+        throw new Error(errorMessage)
       }
 
-      const responseText = await response.text()
-      console.log("DEBUG: Raw response text:", responseText)
-
-      let savedPatient
-      try {
-        savedPatient = JSON.parse(responseText)
-      } catch (e) {
-        console.error("DEBUG: Failed to parse JSON response:", e)
-        throw new Error("Invalid response from server")
-      }
-
-      console.log("DEBUG: Parsed API response:", savedPatient)
-      setPatientId(savedPatient.id)
-
-      // Store patient ID in localStorage for recommendations page
-      console.log("DEBUG: Storing patient ID:", savedPatient.id)
-      const patientId = savedPatient.id || savedPatient._id
-      if (patientId) {
-        localStorage.setItem("currentPatientId", patientId.toString())
-        setPatientId(patientId)
-
-        // Automatically generate AI recommendations if detected conditions exist
-        if (detectedConditions.length > 0) {
-          console.log("DEBUG: Generating AI recommendations automatically")
-          try {
-            const recommendationResponse = await fetch(`http://127.0.0.1:8004/ai-recommendations/${patientId}`, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                detected_conditions: detectedConditions
-              }),
-            })
-
-            if (recommendationResponse.ok) {
-              console.log("DEBUG: AI recommendations generated successfully")
-              alert("Patient data saved successfully! AI recommendations have been generated.")
-            } else {
-              console.warn("DEBUG: Failed to generate AI recommendations automatically")
-              alert("Patient data saved successfully! You can view recommendations on the next page.")
-            }
-          } catch (recError) {
-            console.warn("DEBUG: Error generating AI recommendations:", recError)
-            alert("Patient data saved successfully! You can view recommendations on the next page.")
-          }
-        } else {
-          alert("Patient data saved successfully!")
-        }
+      const pId = responseData.id || responseData._id
+      if (pId) {
+        localStorage.setItem("currentPatientId", pId.toString())
+        setPatientId(pId)
+        alert("Patient record saved successfully.")
       } else {
-        console.error("DEBUG: No patient ID returned from API")
-        console.error("DEBUG: Full response:", savedPatient)
-        alert("Patient data saved successfully!")
+        alert("Patient record saved.")
       }
     } catch (error) {
-      console.error("Error saving patient:", error)
-      setSubmitError(error instanceof Error ? error.message : "Failed to save patient data")
+      const errorMessage = error instanceof Error ? error.message : "Failed to save patient data"
+      setSubmitError(errorMessage)
     } finally {
       setIsLoading(false)
     }
   }
 
-  // Load detected conditions from localStorage
   useEffect(() => {
     const storedConditions = localStorage.getItem("detectedConditions")
     if (storedConditions) {
-      const conditions = JSON.parse(storedConditions)
-      console.log("DEBUG: Loaded detected conditions in patient data page:", conditions)
-      setDetectedConditions(conditions)
+      setDetectedConditions(JSON.parse(storedConditions))
     }
   }, [])
 
   return (
-    <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-      <div className="text-center mb-8">
-        <h1 className="text-3xl font-bold text-gray-900 mb-4">Patient Data Input</h1>
-        <p className="text-lg text-gray-600">
-          Enter patient information for personalized prosthetic recommendations
-        </p>
-      </div>
-
-      <div className="bg-white rounded-lg shadow-lg p-8">
-        {/* Section: Patient Info */}
-        <div className="flex items-center mb-6">
-          <User className="h-6 w-6 text-blue-600 mr-2" />
-          <h2 className="text-xl font-semibold text-gray-900">Patient Information</h2>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* Name */}
-          <div>
-            <label htmlFor="name" className="block text-sm font-medium text-gray-700 mb-2">
-              Full Name *
-            </label>
-            <input
-              type="text"
-              id="name"
-              name="name"
-              value={formData.name}
-              onChange={handleInputChange}
-              placeholder="Enter full name"
-              className={`w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                errors.name ? "border-red-500" : "border-gray-300"
-              }`}
-            />
-            {errors.name && <p className="mt-1 text-sm text-red-600">{errors.name}</p>}
-          </div>
-
-          {/* NIC */}
-          <div>
-            <label htmlFor="nic" className="block text-sm font-medium text-gray-700 mb-2">
-              NIC *
-            </label>
-            <input
-              type="text"
-              id="nic"
-              name="nic"
-              value={formData.nic}
-              onChange={handleInputChange}
-              placeholder="Enter National ID"
-              className={`w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                errors.nic ? "border-red-500" : "border-gray-300"
-              }`}
-            />
-            {errors.nic && <p className="mt-1 text-sm text-red-600">{errors.nic}</p>}
-          </div>
-
-          {/* Age */}
-          <div>
-            <label htmlFor="age" className="block text-sm font-medium text-gray-700 mb-2">
-              Age *
-            </label>
-            <input
-              type="number"
-              id="age"
-              name="age"
-              value={formData.age}
-              onChange={handleInputChange}
-              min="1"
-              max="120"
-              placeholder="Enter patient age"
-              className={`w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                errors.age ? "border-red-500" : "border-gray-300"
-              }`}
-            />
-            {errors.age && <p className="mt-1 text-sm text-red-600">{errors.age}</p>}
-          </div>
-
-          {/* Gender */}
-          <div>
-            <label htmlFor="gender" className="block text-sm font-medium text-gray-700 mb-2">
-              Gender *
-            </label>
-            <select
-              id="gender"
-              name="gender"
-              value={formData.gender}
-              onChange={handleInputChange}
-              className={`w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                errors.gender ? "border-red-500" : "border-gray-300"
-              }`}
-            >
-              <option value="">Select Gender</option>
-              <option value="Male">Male</option>
-              <option value="Female">Female</option>
-              <option value="Other">Other</option>
-            </select>
-            {errors.gender && <p className="mt-1 text-sm text-red-600">{errors.gender}</p>}
-          </div>
-
-          {/* Budget */}
-          <div>
-            <label htmlFor="budget" className="block text-sm font-medium text-gray-700 mb-2">
-              Budget (LKR) *
-            </label>
-            <input
-              type="range"
-              id="budget"
-              name="budget"
-              min="10000"
-              max="300000"
-              step="5000"
-              value={formData.budget}
-              onChange={handleInputChange}
-              className="w-full"
-            />
-            <div className="flex justify-between text-sm text-gray-600">
-              <span>LKR 10,000</span>
-              <span>LKR 300,000</span>
+    <div className="min-h-screen bg-slate-50 flex flex-col pb-12">
+        {/* Top Toolbar */}
+        <div className="w-full bg-slate-900 border-b border-slate-800 p-4 shadow-md sticky top-0 z-10">
+            <div className="max-w-screen-xl mx-auto flex justify-between items-center px-4">
+                <div className="flex items-center space-x-3 text-white">
+                    <ClipboardList className="h-6 w-6 text-blue-400" />
+                    <h1 className="text-xl font-semibold tracking-wide">Patient Clinical Record</h1>
+                </div>
             </div>
-            <p className="mt-1 text-gray-700">Selected: LKR {formData.budget}</p>
-            {errors.budget && <p className="mt-1 text-sm text-red-600">{errors.budget}</p>}
-          </div>
         </div>
 
-        {/* Medical History */}
-        <div className="mt-6">
-          <label className="block text-sm font-medium text-gray-700 mb-2">Medical & Dental History *</label>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-            {[
-              "Diabetes",
-              "Hypertension",
-              "Heart Disease",
-              "Allergies",
-              "Bone Loss",
-              "Caries",
-              "Crown",
-              "Filling",
-              "Implant",
-              "Missing Teeth",
-              "Root Canal Treatment",
-              "Impacted Tooth",
-            ].map((cond) => (
-              <label key={cond} className="inline-flex items-center space-x-2">
-                <input
-                  type="checkbox"
-                  name="medicalConditions"
-                  value={cond}
-                  checked={formData.medicalConditions.includes(cond)}
-                  onChange={handleInputChange}
-                  className="h-4 w-4 text-blue-600 border-gray-300 rounded"
-                />
-                <span className="text-gray-700">{cond}</span>
-              </label>
-            ))}
+        <div className="w-full max-w-screen-xl mx-auto px-4 mt-8 flex flex-col lg:flex-row gap-6">
 
-            {/* None */}
-            <label className="inline-flex items-center space-x-2 col-span-full">
-              <input
-                type="checkbox"
-                name="medicalConditions"
-                value="None"
-                checked={formData.medicalConditions.includes("None")}
-                onChange={handleInputChange}
-                className="h-4 w-4 text-blue-600 border-gray-300 rounded"
-              />
-              <span className="text-gray-700">None</span>
-            </label>
-            {formData.medicalConditions.includes("Other") && (
-              <input
-                type="text"
-                name="otherMedicalCondition"
-                value={formData.otherMedicalCondition}
-                onChange={handleInputChange}
-                placeholder="Specify other medical condition"
-                className="w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            )}
-          </div>
-          {errors.medicalConditions && <p className="mt-1 text-sm text-red-600">{errors.medicalConditions}</p>}
+            {/* Left Column: Form */}
+            <div className="flex-1 flex flex-col gap-6">
+                
+                {/* Demographics Card */}
+                <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div className="bg-slate-100 p-3 border-b border-slate-200">
+                        <h2 className="text-sm font-bold text-slate-700 uppercase tracking-wider flex items-center">
+                            <User className="h-4 w-4 mr-2" /> Demographics & Core Info
+                        </h2>
+                    </div>
+                    <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-5">
+                        <div>
+                            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Full Name *</label>
+                            <input
+                                type="text" name="name" value={formData.name} onChange={handleInputChange}
+                                className={`w-full px-3 py-2 text-sm border rounded bg-slate-50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 transition-colors ${errors.name ? "border-red-400" : "border-slate-300"}`}
+                            />
+                            {errors.name && <p className="mt-1 text-xs text-red-500">{errors.name}</p>}
+                        </div>
+                        <div>
+                            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Patient ID / NIC *</label>
+                            <input
+                                type="text" name="nic" value={formData.nic} onChange={handleInputChange}
+                                className={`w-full px-3 py-2 text-sm border rounded bg-slate-50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 transition-colors ${errors.nic ? "border-red-400" : "border-slate-300"}`}
+                            />
+                            {errors.nic && <p className="mt-1 text-xs text-red-500">{errors.nic}</p>}
+                        </div>
+                        <div>
+                            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Age *</label>
+                            <input
+                                type="number" name="age" value={formData.age} onChange={handleInputChange} min="1" max="120"
+                                className={`w-full px-3 py-2 text-sm border rounded bg-slate-50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 transition-colors ${errors.age ? "border-red-400" : "border-slate-300"}`}
+                            />
+                            {errors.age && <p className="mt-1 text-xs text-red-500">{errors.age}</p>}
+                        </div>
+                        <div>
+                            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Gender *</label>
+                            <select
+                                name="gender" value={formData.gender} onChange={handleInputChange}
+                                className={`w-full px-3 py-2 text-sm border rounded bg-slate-50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 transition-colors ${errors.gender ? "border-red-400" : "border-slate-300"}`}
+                            >
+                                <option value="">Select...</option>
+                                <option value="Male">Male</option>
+                                <option value="Female">Female</option>
+                                <option value="Other">Other</option>
+                            </select>
+                            {errors.gender && <p className="mt-1 text-xs text-red-500">{errors.gender}</p>}
+                        </div>
+                        <div className="md:col-span-2">
+                            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Available Budget Constraint (LKR) *</label>
+                            <div className="flex items-center space-x-4">
+                                <input
+                                    type="range" name="budget" min="10000" max="300000" step="5000" value={formData.budget} onChange={handleInputChange}
+                                    className="w-full accent-blue-600"
+                                />
+                                <span className="text-sm font-semibold text-slate-800 bg-slate-100 px-3 py-1 rounded border border-slate-200 min-w-[120px] text-center">
+                                    LKR {parseInt(formData.budget).toLocaleString()}
+                                </span>
+                            </div>
+                            {errors.budget && <p className="mt-1 text-xs text-red-500">{errors.budget}</p>}
+                        </div>
+                    </div>
+                </div>
+
+                {/* Medical History Card */}
+                <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div className="bg-slate-100 p-3 border-b border-slate-200">
+                        <h2 className="text-sm font-bold text-slate-700 uppercase tracking-wider flex items-center">
+                            <Activity className="h-4 w-4 mr-2" /> Clinical History & Parameters
+                        </h2>
+                    </div>
+                    <div className="p-5">
+                        
+                        <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">Pre-existing Conditions *</label>
+                        <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-2">
+                            {["Diabetes", "Hypertension", "Heart Disease", "Allergies", "Bone Loss", "Caries", "Crown", "Filling", "Implant", "Missing Teeth", "Root Canal Treatment", "Impacted Tooth"].map((cond) => (
+                                <label key={cond} className="flex items-center space-x-2 text-sm text-slate-700 cursor-pointer">
+                                    <input type="checkbox" name="medicalConditions" value={cond} checked={formData.medicalConditions.includes(cond)} onChange={handleInputChange} className="h-4 w-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500" />
+                                    <span>{cond}</span>
+                                </label>
+                            ))}
+                            <label className="flex items-center space-x-2 text-sm text-slate-700 font-medium cursor-pointer">
+                                <input type="checkbox" name="medicalConditions" value="None" checked={formData.medicalConditions.includes("None")} onChange={handleInputChange} className="h-4 w-4 text-slate-600 border-slate-300 rounded focus:ring-slate-500" />
+                                <span>None / Healthy</span>
+                            </label>
+                            <label className="flex items-center space-x-2 text-sm text-slate-700 cursor-pointer">
+                                <input type="checkbox" name="medicalConditions" value="Other" checked={formData.medicalConditions.includes("Other")} onChange={handleInputChange} className="h-4 w-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500" />
+                                <span>Other (Specify)</span>
+                            </label>
+                        </div>
+                        {formData.medicalConditions.includes("Other") && (
+                            <input
+                                type="text" name="otherMedicalCondition" value={formData.otherMedicalCondition} onChange={handleInputChange} placeholder="Specify conditions..."
+                                className="w-full mt-2 px-3 py-2 text-sm border rounded border-slate-300 bg-slate-50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                            />
+                        )}
+                        {errors.medicalConditions && <p className="mt-1 text-xs text-red-500">{errors.medicalConditions}</p>}
+
+                        <hr className="my-5 border-slate-200" />
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                            <div>
+                                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Allergies</label>
+                                <textarea
+                                    name="allergies" value={formData.allergies} onChange={handleInputChange} rows={2} placeholder="N/A"
+                                    className="w-full px-3 py-2 text-sm border rounded border-slate-300 bg-slate-50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Family Dental History</label>
+                                <textarea
+                                    name="familyDentalHistory" value={formData.familyDentalHistory} onChange={handleInputChange} rows={2} placeholder="N/A"
+                                    className="w-full px-3 py-2 text-sm border rounded border-slate-300 bg-slate-50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                />
+                            </div>
+                        </div>
+
+                        <hr className="my-5 border-slate-200" />
+
+                        <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">Lifestyle Habits</label>
+                        <div className="flex flex-wrap gap-4">
+                            {["Smoking", "Alcohol", "Bruxism", "Betel Chewing", "Coffee", "Tea"].map((habit) => (
+                                <label key={habit} className="flex items-center space-x-2 text-sm text-slate-700 cursor-pointer bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-md hover:bg-slate-100">
+                                    <input type="checkbox" name="habits" value={habit} checked={formData.habits.includes(habit)} onChange={handleInputChange} className="h-4 w-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500" />
+                                    <span>{habit}</span>
+                                </label>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+
+                {submitError && (
+                    <div className="p-4 bg-red-50 border border-red-200 text-red-800 text-sm rounded-lg flex items-center">
+                        <AlertTriangle className="h-4 w-4 mr-2" />
+                        {submitError}
+                    </div>
+                )}
+
+            </div>
+
+            {/* Right Column: AI Data & Actions */}
+            <div className="w-full lg:w-80 flex flex-col gap-6">
+                
+                {/* AI Findings Summary */}
+                <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div className="bg-blue-900 justify-between p-3 flex items-center">
+                        <h2 className="text-sm font-bold text-blue-100 uppercase tracking-wider flex items-center">
+                            <ScanLine className="h-4 w-4 mr-2" /> AI Diagnostics
+                        </h2>
+                    </div>
+                    <div className="p-4 bg-slate-50">
+                        {detectedConditions.length > 0 ? (
+                            <div>
+                                <p className="text-xs text-slate-500 mb-3 font-medium">Auto-extracted from attached X-ray:</p>
+                                <ul className="space-y-2">
+                                    {detectedConditions.map((condition, index) => (
+                                        <li key={index} className="flex items-center text-sm font-medium text-slate-800 bg-white border border-slate-200 p-2 rounded shadow-sm">
+                                            <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mr-2"></div>
+                                            {condition}
+                                        </li>
+                                    ))}
+                                </ul>
+                                <p className="text-xs text-slate-400 mt-4 leading-relaxed">
+                                    These findings will be cross-referenced with your clinical inputs to generate the final treatment plan.
+                                </p>
+                            </div>
+                        ) : (
+                            <div className="text-center py-6 text-slate-400">
+                                <FileText className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                                <p className="text-sm">No X-ray analysis linked to this session.</p>
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                {/* Secure Box */}
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
+                    <div className="flex items-center space-x-2 text-slate-600 mb-2">
+                        <Shield className="h-4 w-4" />
+                        <span className="text-sm font-bold uppercase tracking-wider">HIPAA Compliant</span>
+                    </div>
+                    <p className="text-xs text-slate-500 leading-relaxed">
+                        Data is encrypted and utilized strictly for the generation of medical recommendations. No PHI is shared without explicit consent.
+                    </p>
+                </div>
+
+                {/* Actions */}
+                <div className="flex flex-col gap-3 sticky top-24">
+                    <button
+                        onClick={handleSubmit}
+                        disabled={isLoading}
+                        className="w-full flex items-center justify-center px-4 py-3 rounded-lg text-white font-medium bg-blue-600 hover:bg-blue-700 shadow-sm transition disabled:opacity-50"
+                    >
+                        {isLoading ? <Loader2 className="h-5 w-5 mr-2 animate-spin" /> : <Save className="h-5 w-5 mr-2" />}
+                        {isLoading ? "Committing Record..." : "Save Clinical Record"}
+                    </button>
+
+                    <Link
+                        href="/recommendations"
+                        className={`w-full flex items-center justify-center px-4 py-3 rounded-lg font-medium border transition ${patientId ? "text-slate-900 bg-white border-slate-300 hover:bg-slate-50 shadow-sm" : "text-slate-400 bg-slate-50 border-slate-200 cursor-not-allowed pointer-events-none"}`}
+                    >
+                        Proceed to Treatment Plan
+                        <ArrowRight className="h-4 w-4 ml-2" />
+                    </Link>
+                </div>
+
+            </div>
+
         </div>
-
-        {/* Allergies */}
-        <div className="mt-6">
-          <label htmlFor="allergies" className="block text-sm font-medium text-gray-700 mb-2">
-            Allergies
-          </label>
-          <textarea
-            id="allergies"
-            name="allergies"
-            value={formData.allergies}
-            onChange={handleInputChange}
-            rows={3}
-            placeholder="List any allergies (drugs, latex, etc.)"
-            className="w-full px-3 py-2 border rounded-md focus:ring-2 focus:ring-blue-500"
-          />
-        </div>
-
-        {/* Habits */}
-        <div className="mt-6">
-          <label className="block text-sm font-medium text-gray-700 mb-2">Habits</label>
-          <div className="flex flex-wrap gap-3">
-            {["Smoking", "Alcohol", "Bruxism", "Betel Chewing", "Coffee", "Tea"].map((habit) => (
-              <label key={habit} className="inline-flex items-center space-x-2">
-                <input
-                  type="checkbox"
-                  name="habits"
-                  value={habit}
-                  checked={formData.habits.includes(habit)}
-                  onChange={handleInputChange}
-                  className="h-4 w-4 text-blue-600 border-gray-300 rounded"
-                />
-                <span className="text-gray-700">{habit}</span>
-              </label>
-            ))}
-          </div>
-        </div>
-
-
-        {/* Family Dental History */}
-        <div className="mt-6">
-          <label htmlFor="familyDentalHistory" className="block text-sm font-medium text-gray-700 mb-2">
-            Family Dental History
-          </label>
-          <textarea
-            id="familyDentalHistory"
-            name="familyDentalHistory"
-            value={formData.familyDentalHistory}
-            onChange={handleInputChange}
-            rows={3}
-            placeholder="Any family dental issues (e.g., gum disease, tooth loss, etc.)"
-            className="w-full px-3 py-2 border rounded-md focus:ring-2 focus:ring-blue-500"
-          />
-        </div>
-
-
-        {/* Error Message */}
-        {submitError && (
-          <div className="mt-6 p-4 bg-red-100 text-red-800 rounded-md">
-            {submitError}
-          </div>
-        )}
-
-        {/* Buttons */}
-        <div className="flex flex-col sm:flex-row gap-4 justify-center mt-8">
-          <button
-            onClick={handleSubmit}
-            disabled={isLoading}
-            className="inline-flex items-center px-6 py-3 rounded-md text-white bg-blue-600 hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {isLoading ? (
-              <Loader2 className="h-5 w-5 mr-2 animate-spin" />
-            ) : (
-              <Save className="h-5 w-5 mr-2" />
-            )}
-            {isLoading ? "Saving..." : "Save Patient Data"}
-          </button>
-
-          <Link
-            href="/recommendations"
-            className="inline-flex items-center px-6 py-3 rounded-md text-blue-600 border border-blue-600 hover:bg-blue-50 transition"
-          >
-            Next: View Recommendations
-            <ArrowRight className="h-5 w-5 ml-2" />
-          </Link>
-        </div>
-      </div>
-
-      {/* AI Detected Conditions */}
-      {detectedConditions.length > 0 && (
-        <div className="mt-8 bg-green-50 rounded-lg p-6">
-          <h3 className="text-lg font-medium text-green-900 mb-3">AI-Detected Dental Conditions</h3>
-          <p className="text-sm text-green-800 mb-3">
-            Based on your uploaded X-ray analysis, the following conditions were detected:
-          </p>
-          <ul className="list-disc pl-5 text-sm text-green-800 space-y-1">
-            {detectedConditions.map((condition, index) => (
-              <li key={index}>{condition}</li>
-            ))}
-          </ul>
-          <p className="text-xs text-green-700 mt-3">
-            These conditions will be used to generate personalized treatment recommendations.
-          </p>
-        </div>
-      )}
-
-      {/* Privacy */}
-      <div className="mt-8 bg-blue-50 rounded-lg p-6">
-        <h3 className="text-lg font-medium text-blue-900 mb-3">Data Privacy & Security</h3>
-        <ul className="text-sm text-blue-800 space-y-2">
-          <li>• All patient data is encrypted and stored securely</li>
-          <li>• Used solely for generating prosthetic recommendations</li>
-          <li>• No third-party data sharing without consent</li>
-          <li>• Compliant with HIPAA and healthcare data protection standards</li>
-        </ul>
-      </div>
     </div>
   )
 }

@@ -69,9 +69,16 @@ async def get_patient(patient_id: str):
         if not patient:
             raise HTTPException(status_code=404, detail="Patient not found")
 
-        patient["id"] = str(patient["_id"])
-        del patient["_id"]
-        return patient
+        # Convert to dict and clean up
+        patient_dict = dict(patient)
+        patient_dict["id"] = str(patient_dict["_id"])
+        del patient_dict["_id"]
+
+        # Remove datetime fields that can't be JSON serialized
+        patient_dict.pop("created_at", None)
+        patient_dict.pop("updated_at", None)
+
+        return patient_dict
     except HTTPException:
         raise
     except Exception as e:
@@ -79,15 +86,14 @@ async def get_patient(patient_id: str):
 
 
 @router.post("/patients")
-async def create_patient(patient: Patient):
+async def create_patient(patient_data: Dict[str, Any]):
     try:
         try:
             db = Database.get_database()
         except ConnectionError:
             raise HTTPException(status_code=503, detail="Database not available")
 
-        # Convert to dict and add MongoDB fields
-        patient_data = patient.dict(by_alias=True, exclude_unset=True)
+        # Add MongoDB fields
         patient_data["_id"] = ObjectId()
         patient_data["created_at"] = datetime.utcnow()
         patient_data["updated_at"] = datetime.utcnow()

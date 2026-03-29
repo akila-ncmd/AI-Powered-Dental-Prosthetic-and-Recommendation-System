@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Award, DollarSign, Clock, FileText, ArrowRight, Brain, TrendingUp, Shield } from "lucide-react"
+import { Award, DollarSign, Clock, FileText, ArrowRight, Brain, TrendingUp, Shield, Activity, Save, Loader2, CheckCircle2 } from "lucide-react"
 import Link from "next/link"
 
 interface PatientData {
@@ -35,7 +35,7 @@ export default function RecommendationsPage() {
    const [patientData, setPatientData] = useState<PatientData | null>(null)
    const [detectedConditions, setDetectedConditions] = useState<string[]>([])
    const [recommendations, setRecommendations] = useState<AIRecommendation[]>([])
-   const [selectedRecommendation, setSelectedRecommendation] = useState<number | null>(null)
+   const [selectedRecommendation, setSelectedRecommendation] = useState<number | null>(0) // Default to first
    const [message, setMessage] = useState<string | null>(null)
    const [loading, setLoading] = useState(true)
    const [error, setError] = useState<string | null>(null)
@@ -44,11 +44,10 @@ export default function RecommendationsPage() {
   // Load patient data and detected conditions from APIs
    useEffect(() => {
      const loadData = async () => {
-       // Get patient ID from localStorage
        const patientId = localStorage.getItem("currentPatientId")
 
        if (!patientId) {
-         setError("No patient selected. Please start from the patient data page.")
+         setError("No patient selected. Please start from the patient record page.")
          setLoading(false)
          return
        }
@@ -57,31 +56,22 @@ export default function RecommendationsPage() {
          setLoading(true)
          setError(null)
 
-         // Fetch patient data
-         const patientResponse = await fetch(`http://127.0.0.1:8004/patients/${patientId}`)
-         if (!patientResponse.ok) {
-           throw new Error("Failed to load patient data")
-         }
+         const patientResponse = await fetch(`http://127.0.0.1:8000/patients/${patientId}`)
+         if (!patientResponse.ok) throw new Error("Failed to load patient data")
+         
          const patient = await patientResponse.json()
          setPatientData(patient)
 
-         // Load detected conditions from localStorage (set during upload)
          const storedConditions = localStorage.getItem("detectedConditions")
          if (storedConditions) {
            const conditions = JSON.parse(storedConditions)
-           console.log("DEBUG: Loaded detected conditions from localStorage:", conditions)
            setDetectedConditions(conditions)
-           
-           // Automatically generate AI recommendations
            await generateAIRecommendations(patientId, conditions)
          } else {
-           console.log("DEBUG: No detected conditions found in localStorage")
            setDetectedConditions([])
-           // Generate recommendations with default condition
            await generateAIRecommendations(patientId, ["Caries"])
          }
        } catch (error) {
-         console.error("Error loading data:", error)
          setError(error instanceof Error ? error.message : "Failed to load data")
        } finally {
          setLoading(false)
@@ -91,241 +81,279 @@ export default function RecommendationsPage() {
      loadData()
    }, [])
 
-  // Generate AI-powered recommendations
   const generateAIRecommendations = async (patientId: string, conditions: string[]) => {
     try {
       setIsGeneratingAI(true)
       
-      const response = await fetch(`http://127.0.0.1:8004/ai-recommendations/${patientId}`, {
+      const response = await fetch(`http://127.0.0.1:8000/ai-recommendations/${patientId}`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          detected_conditions: conditions
-        }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ detected_conditions: conditions }),
       })
 
-      if (!response.ok) {
-        throw new Error("Failed to generate AI recommendations")
-      }
+      if (!response.ok) throw new Error("Failed to generate AI recommendations")
 
       const data = await response.json()
-      console.log("AI Recommendations generated:", data)
-      
       setRecommendations(data.recommendations || [])
-      setMessage("AI-powered recommendations generated successfully!")
-      setTimeout(() => setMessage(null), 3000)
       
     } catch (error) {
-      console.error("Error generating AI recommendations:", error)
       setError("Failed to generate AI recommendations. Please try again.")
     } finally {
       setIsGeneratingAI(false)
     }
   }
 
-  // Regenerate AI recommendations
   const handleRegenerateRecommendations = async () => {
     const patientId = localStorage.getItem("currentPatientId")
     if (!patientId || !detectedConditions.length) return
-
     await generateAIRecommendations(patientId, detectedConditions)
   }
 
-  // Save recommendations to API (they're already saved by the AI engine)
   const handleSaveRecommendations = async () => {
-    setMessage("Recommendations are automatically saved! You can now generate the report.")
+    setMessage("Treatment plan finalized. Data synced automatically.")
     setTimeout(() => setMessage(null), 3000)
   }
 
-  return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-      <div className="text-center mb-8">
-        <div className="flex items-center justify-center mb-4">
-          <Brain className="h-8 w-8 text-blue-600 mr-3" />
-          <h1 className="text-3xl font-bold text-gray-900">AI-Powered Recommendations</h1>
-        </div>
-        <p className="text-lg text-gray-600">
-          Advanced hybrid ML system analyzing X-ray data and patient profile for personalized treatment recommendations
-        </p>
-        {isGeneratingAI && (
-          <div className="mt-4 flex items-center justify-center">
-            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600 mr-2"></div>
-            <span className="text-blue-600 font-medium">AI Engine Processing...</span>
+  const getRankBadge = (index: number) => {
+      if (index === 0) return <span className="bg-emerald-100 text-emerald-800 text-xs font-bold px-2 py-1 rounded border border-emerald-300 mr-3">PRIMARY Choice</span>
+      if (index === 1) return <span className="bg-blue-100 text-blue-800 text-xs font-bold px-2 py-1 rounded border border-blue-300 mr-3">SECONDARY</span>
+      return <span className="bg-slate-100 text-slate-800 text-xs font-bold px-2 py-1 rounded border border-slate-300 mr-3">ALTERNATIVE</span>
+  }
+
+  // Helper circle chart component constrainted by Tailwind
+  const CircularGauge = ({ score, colorClass }: { score: number, colorClass: string }) => {
+      return (
+          <div className="relative w-16 h-16 flex items-center justify-center rounded-full bg-slate-50 border-4 border-slate-100 shadow-inner">
+             {/* A true SVG gauge would go here, simulating with CSS */}
+             <div className="absolute inset-0 rounded-full border-4 border-transparent"></div>
+             <div className="flex flex-col items-center">
+                 <span className={`text-lg font-bold ${colorClass.replace('bg-', 'text-').replace('-500', '-600')}`}>{score}</span>
+                 <span className="text-[10px] text-slate-500 font-medium -mt-1">INDEX</span>
+             </div>
+             {/* Simple visual indicator rings */}
+             <svg className="absolute inset-0 w-full h-full transform -rotate-90">
+                 <circle cx="28" cy="28" r="28" stroke="currentColor" strokeWidth="4" fill="transparent"
+                 strokeDasharray="176" strokeDashoffset={176 - (176 * score) / 100} 
+                 className={`${colorClass.replace('bg-', 'text-')}`} />
+             </svg>
           </div>
-        )}
+      )
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50 flex flex-col pb-12">
+      {/* Top Toolbar */}
+      <div className="w-full bg-slate-900 border-b border-slate-800 p-4 shadow-md sticky top-0 z-10">
+          <div className="max-w-screen-xl mx-auto flex justify-between items-center px-4">
+              <div className="flex items-center space-x-3 text-white">
+                  <Brain className="h-6 w-6 text-purple-400" />
+                  <h1 className="text-xl font-semibold tracking-wide">AI Treatment Planning</h1>
+              </div>
+          </div>
       </div>
 
-      {loading && (
-        <div className="flex items-center justify-center p-8">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mr-4"></div>
-          <span className="text-gray-600">Loading recommendations...</span>
-        </div>
-      )}
+      <div className="max-w-screen-xl mx-auto px-4 mt-8 w-full">
+        <div className="flex flex-col lg:flex-row gap-6">
 
-      {error && (
-        <div className="mb-6 p-4 bg-red-100 text-red-800 rounded">{error}</div>
-      )}
-
-      {message && (
-        <div className="mb-6 p-4 bg-green-100 text-green-800 rounded">{message}</div>
-      )}
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Detected Conditions Panel */}
-        <div className="lg:col-span-1 bg-white rounded-lg shadow-lg p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Detected X-Ray Conditions</h3>
-          {loading ? (
-            <div className="flex items-center justify-center py-8">
-              <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600"></div>
-            </div>
-          ) : (
-            <>
-              <ul className="list-disc pl-5 text-sm text-gray-700">
-                {detectedConditions.length > 0
-                  ? detectedConditions.map((c, i) => <li key={i}>{c}</li>)
-                  : <li>No X-ray analysis completed yet</li>}
-              </ul>
-              {patientData && (
-                <div className="mt-4 text-sm text-gray-500">
-                  Patient: <strong>{patientData.name}</strong> <br />
-                  Age: {patientData.age} | Gender: {patientData.gender} <br />
-                  Budget: LKR {Number(patientData.budget).toLocaleString()}
-                </div>
-              )}
-            </>
-          )}
-        </div>
-
-        {/* Recommendations Panel */}
-        <div className="lg:col-span-2 space-y-4">
-          {recommendations.map((rec, index) => (
-            <div
-              key={index}
-              className={`bg-white rounded-lg shadow-lg p-6 cursor-pointer transition-all ${
-                selectedRecommendation === index ? "ring-2 ring-blue-500 shadow-xl" : "hover:shadow-lg"
-              }`}
-              onClick={() => setSelectedRecommendation(index)}
-            >
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center">
-                  <Award className="h-6 w-6 text-blue-600 mr-3" />
-                  <h3 className="text-xl font-semibold text-gray-900">{rec.treatment}</h3>
-                  <div className="ml-3 flex items-center">
-                    <Brain className="h-4 w-4 text-purple-600 mr-1" />
-                    <span className="text-xs text-purple-600 font-medium">
-                      AI: {Math.round(rec.ml_confidence * 100)}%
-                    </span>
-                  </div>
-                </div>
-                <div
-                  className={`w-16 h-16 rounded-full flex items-center justify-center text-white font-bold ${
-                    rec.suitability_score >= 90 ? "bg-green-500" : rec.suitability_score >= 75 ? "bg-blue-500" : "bg-yellow-500"
-                  }`}
-                >
-                  {rec.suitability_score}%
-                </div>
-              </div>
-
-              <p className="text-gray-600 mb-4">{rec.rationale}</p>
-
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-                <div className="flex items-center">
-                  <DollarSign className="h-5 w-5 text-green-600 mr-2" />
-                  <div>
-                    <div className="text-sm font-medium text-gray-900">Cost Range</div>
-                    <div className="text-sm text-gray-600">{rec.cost_estimate}</div>
-                  </div>
-                </div>
-                <div className="flex items-center">
-                  <Clock className="h-5 w-5 text-blue-600 mr-2" />
-                  <div>
-                    <div className="text-sm font-medium text-gray-900">Treatment Time</div>
-                    <div className="text-sm text-gray-600">{rec.duration}</div>
-                  </div>
-                </div>
-                <div className="flex items-center">
-                  <TrendingUp className="h-5 w-5 text-purple-600 mr-2" />
-                  <div>
-                    <div className="text-sm font-medium text-gray-900">Success Rate</div>
-                    <div className="text-sm text-gray-600">{rec.success_rate}%</div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center mb-4">
-                <Shield className="h-5 w-5 text-orange-600 mr-2" />
-                <div>
-                  <span className="text-sm font-medium text-gray-900">Risk Level: </span>
-                  <span className={`text-sm font-medium ${
-                    rec.risk_level === 'low' ? 'text-green-600' :
-                    rec.risk_level === 'medium' ? 'text-yellow-600' : 'text-red-600'
-                  }`}>
-                    {rec.risk_level.charAt(0).toUpperCase() + rec.risk_level.slice(1)}
-                  </span>
-                  <span className="text-sm text-gray-600 ml-2">• Recovery: {rec.recovery_time}</span>
-                </div>
-              </div>
-
-              {selectedRecommendation === index && (
-                <div className="mt-4 pt-4 border-t border-gray-200">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <h4 className="font-medium text-green-700 mb-2">Advantages</h4>
-                      <ul className="text-sm text-gray-600 space-y-1">
-                        {rec.pros.map((pro: string, i: number) => (
-                          <li key={i} className="flex items-center">
-                            <div className="w-2 h-2 bg-green-500 rounded-full mr-2"></div>
-                            {pro}
-                          </li>
-                        ))}
-                      </ul>
+            {/* Left Column: Context Pane */}
+            <div className="w-full lg:w-80 flex flex-col gap-6">
+                
+                {/* Patient Context */}
+                <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden transform transition-all">
+                    <div className="bg-slate-100 p-3 border-b border-slate-200">
+                        <h2 className="text-sm font-bold text-slate-700 uppercase tracking-wider flex items-center">
+                            <Activity className="h-4 w-4 mr-2" /> Clinical Context
+                        </h2>
                     </div>
-                    <div>
-                      <h4 className="font-medium text-red-700 mb-2">Disadvantages</h4>
-                      <ul className="text-sm text-gray-600 space-y-1">
-                        {rec.cons.map((con: string, i: number) => (
-                          <li key={i} className="flex items-center">
-                            <div className="w-2 h-2 bg-red-500 rounded-full mr-2"></div>
-                            {con}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  </div>
+                    
+                    {loading ? (
+                        <div className="p-8 flex justify-center"><Loader2 className="animate-spin text-blue-500" /></div>
+                    ) : patientData ? (
+                        <div className="p-4 grid gap-3">
+                            <div className="bg-slate-50 p-3 rounded border border-slate-200">
+                                <p className="text-xs text-slate-500 uppercase font-semibold">Patient</p>
+                                <p className="text-sm font-bold text-slate-800">{patientData.name}</p>
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                                <div className="bg-slate-50 p-3 rounded border border-slate-200">
+                                    <p className="text-xs text-slate-500 uppercase font-semibold">Age/Sex</p>
+                                    <p className="text-sm font-bold text-slate-800">{patientData.age} / {patientData.gender === 'Male' ? 'M' : patientData.gender === 'Female' ? 'F' : 'O'}</p>
+                                </div>
+                                <div className="bg-slate-50 p-3 rounded border border-slate-200">
+                                    <p className="text-xs text-slate-500 uppercase font-semibold">Budget</p>
+                                    <p className="text-sm font-bold text-emerald-700">LKR {Number(patientData.budget).toLocaleString()}</p>
+                                </div>
+                            </div>
+                            
+                            <hr className="border-slate-200 my-1" />
+                            
+                            <div>
+                                <p className="text-xs text-slate-500 uppercase font-semibold mb-2">Detected Pathology</p>
+                                {detectedConditions.length > 0 ? (
+                                    <ul className="flex flex-wrap gap-2">
+                                        {detectedConditions.map((c, i) => (
+                                            <li key={i} className="text-xs bg-amber-100 text-amber-800 border border-amber-200 px-2 py-1 rounded font-medium">{c}</li>
+                                        ))}
+                                    </ul>
+                                ) : (
+                                    <p className="text-xs text-slate-500 italic">No imaging pathologies detected.</p>
+                                )}
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="p-4 text-sm text-slate-500">Failed to load context.</div>
+                    )}
                 </div>
-              )}
+
+                {/* Actions Sidebar */}
+                <div className="flex flex-col gap-3 sticky top-24">
+                    {message && (
+                        <div className="p-3 bg-emerald-50 text-emerald-800 text-sm font-medium rounded-lg border border-emerald-200 flex items-center">
+                            <CheckCircle2 className="h-4 w-4 mr-2 flex-shrink-0" /> {message}
+                        </div>
+                    )}
+                    {error && (
+                        <div className="p-3 bg-red-50 text-red-800 text-sm font-medium rounded-lg border border-red-200">
+                            {error}
+                        </div>
+                    )}
+
+                    <button
+                        onClick={handleRegenerateRecommendations}
+                        disabled={isGeneratingAI || loading}
+                        className="w-full flex items-center justify-center px-4 py-3 bg-white text-slate-700 font-medium rounded-lg shadow-sm border border-slate-300 hover:bg-slate-50 transition disabled:opacity-50"
+                    >
+                        {isGeneratingAI ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Brain className="h-4 w-4 mr-2 text-purple-600" />}
+                        {isGeneratingAI ? "Processing..." : "Recalculate Model"}
+                    </button>
+
+                    <button
+                        onClick={handleSaveRecommendations}
+                        className="w-full flex items-center justify-center px-4 py-3 bg-blue-600 text-white font-medium rounded-lg shadow-sm hover:bg-blue-700 transition"
+                    >
+                        <Save className="h-4 w-4 mr-2" /> Finalize Plan
+                    </button>
+
+                    <Link
+                        href="/report"
+                        className="w-full flex items-center justify-center px-4 py-3 bg-slate-900 text-white font-medium rounded-lg shadow-sm hover:bg-slate-800 transition mt-2"
+                    >
+                        Generate PDF Report
+                        <ArrowRight className="h-4 w-4 ml-2" />
+                    </Link>
+                </div>
+
             </div>
-          ))}
 
-          {/* Buttons */}
-          <div className="flex flex-col sm:flex-row gap-4 justify-center mt-8">
-            <button
-              onClick={handleRegenerateRecommendations}
-              disabled={isGeneratingAI}
-              className="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-md text-white bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400 transition-colors"
-            >
-              <Brain className="h-5 w-5 mr-2" />
-              {isGeneratingAI ? "Generating..." : "Regenerate AI Recommendations"}
-            </button>
+            {/* Right Column: Recommendations Feed */}
+            <div className="flex-1 flex flex-col gap-4">
+                
+                {loading || isGeneratingAI ? (
+                    <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-12 flex flex-col items-center justify-center min-h-[400px]">
+                        <div className="relative flex justify-center items-center mb-6">
+                            <div className="absolute animate-ping h-16 w-16 rounded-full bg-blue-400 opacity-20"></div>
+                            <Brain className="h-10 w-10 text-blue-600 animate-pulse" />
+                        </div>
+                        <h3 className="text-lg font-bold text-slate-800 mb-2">Analyzing Clinical Graph Matrix...</h3>
+                        <p className="text-sm text-slate-500">Cross-referencing {patientData?.medical_conditions?.length || 0} systemic markers against treatment pathways.</p>
+                    </div>
+                ) : recommendations.length === 0 ? (
+                    <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-8 text-center text-slate-500">
+                        No viable treatment pathways identified matching current variables.
+                    </div>
+                ) : (
+                    recommendations.map((rec, index) => {
+                        const isExpanded = selectedRecommendation === index;
+                        const scoreColor = rec.suitability_score >= 90 ? "bg-emerald-500" : rec.suitability_score >= 75 ? "bg-blue-500" : "bg-amber-500"
 
-            <button
-              onClick={handleSaveRecommendations}
-              className="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 transition-colors"
-            >
-              <FileText className="h-5 w-5 mr-2" />
-              Confirm Recommendations
-            </button>
+                        return (
+                            <div key={index} 
+                                 className={`bg-white rounded-xl border transition-all duration-200 overflow-hidden shadow-sm hover:border-blue-300
+                                 ${isExpanded ? 'border-blue-500 ring-1 ring-blue-500' : 'border-slate-200 cursor-pointer'}`}
+                                 onClick={() => !isExpanded && setSelectedRecommendation(index)}>
+                                
+                                <div className={`p-5 flex items-center justify-between ${isExpanded ? 'bg-slate-50/50' : ''}`}>
+                                    <div className="flex items-start">
+                                        <div className="mt-1 mr-4">
+                                            <CircularGauge score={rec.suitability_score} colorClass={scoreColor} />
+                                        </div>
+                                        <div>
+                                            <div className="flex items-center mb-1">
+                                                {getRankBadge(index)}
+                                                <h3 className="text-lg font-bold text-slate-900">{rec.treatment}</h3>
+                                            </div>
+                                            <p className="text-sm text-slate-600 max-w-2xl line-clamp-2 mt-1">{rec.rationale}</p>
+                                        </div>
+                                    </div>
+                                    <div className="hidden md:flex flex-col items-end text-right ml-4">
+                                        <div className="text-sm font-bold text-slate-800">{rec.cost_estimate}</div>
+                                        <div className="text-xs text-slate-500 mt-1 flex items-center"><Clock className="w-3 h-3 mr-1"/> {rec.duration}</div>
+                                    </div>
+                                </div>
 
-            <Link
-              href="/report"
-              className="inline-flex items-center px-6 py-3 border border-blue-600 text-base font-medium rounded-md text-blue-600 bg-white hover:bg-blue-50 transition-colors"
-            >
-              Generate Report
-              <ArrowRight className="h-5 w-5 ml-2" />
-            </Link>
-          </div>
+                                {isExpanded && (
+                                    <div className="border-t border-slate-200 bg-white">
+                                        
+                                        {/* Metrics Strip */}
+                                        <div className="grid grid-cols-2 md:grid-cols-4 bg-slate-50 border-b border-slate-200 divide-x divide-slate-200">
+                                            <div className="p-3 text-center">
+                                                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Est. Cost</p>
+                                                <p className="text-sm font-semibold text-slate-800 mt-1">{rec.cost_estimate}</p>
+                                            </div>
+                                            <div className="p-3 text-center">
+                                                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Timeline</p>
+                                                <p className="text-sm font-semibold text-slate-800 mt-1">{rec.duration}</p>
+                                            </div>
+                                            <div className="p-3 text-center">
+                                                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Global Success</p>
+                                                <p className="text-sm font-semibold text-slate-800 mt-1">{rec.success_rate}%</p>
+                                            </div>
+                                            <div className="p-3 text-center bg-blue-50/50">
+                                                <p className="text-[10px] font-bold text-blue-600 uppercase tracking-widest">ML Confidence</p>
+                                                <p className="text-sm font-semibold text-blue-900 mt-1">{(rec.ml_confidence * 100).toFixed(1)}%</p>
+                                            </div>
+                                        </div>
+
+                                        <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-6">
+                                            <div>
+                                                <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-700 mb-3 flex items-center">
+                                                    <CheckCircle2 className="w-4 h-4 mr-1"/> Clinical Advantages
+                                                </h4>
+                                                <ul className="space-y-2">
+                                                    {rec.pros.map((pro, i) => (
+                                                        <li key={i} className="text-sm text-slate-700 flex items-start">
+                                                            <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 mt-1.5 mr-2 flex-shrink-0"></div>
+                                                            <span>{pro}</span>
+                                                        </li>
+                                                    ))}
+                                                </ul>
+                                            </div>
+                                            <div>
+                                                <h4 className="text-xs font-bold uppercase tracking-wider text-amber-700 mb-3 flex items-center">
+                                                    <Shield className="w-4 h-4 mr-1"/> Risk & Limitations
+                                                </h4>
+                                                <div className="mb-3 px-3 py-2 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800 flex items-center">
+                                                    <span className="font-bold mr-2 uppercase">Risk Level:</span> 
+                                                    {rec.risk_level} — Recovery: {rec.recovery_time}
+                                                </div>
+                                                <ul className="space-y-2">
+                                                    {rec.cons.map((con, i) => (
+                                                        <li key={i} className="text-sm text-slate-700 flex items-start">
+                                                            <div className="w-1.5 h-1.5 rounded-full bg-amber-500 mt-1.5 mr-2 flex-shrink-0"></div>
+                                                            <span>{con}</span>
+                                                        </li>
+                                                    ))}
+                                                </ul>
+                                            </div>
+                                        </div>
+
+                                    </div>
+                                )}
+                            </div>
+                        )
+                    })
+                )}
+            </div>
         </div>
       </div>
     </div>
