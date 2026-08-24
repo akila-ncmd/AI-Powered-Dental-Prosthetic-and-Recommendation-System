@@ -38,21 +38,26 @@ class Database:
         try:
             # Secure Database Connection relying entirely on environment variables
             connection_string = os.getenv("MONGODB_URL")
-            database_name = "dental_ai"
+            database_name = os.getenv("MONGODB_NAME", "dental_ai")
             
             if not connection_string:
-                print("WARNING: MONGODB_URL is not set. Using blank fallback.")
-                connection_string = "mongodb://localhost:27017/dental_ai"
+                print("WARNING: MONGODB_URL is not set. Defaulting to localhost:27017")
+                connection_string = "mongodb://127.0.0.1:27017"
+            
+            # Remove any whitespace from the URL
+            connection_string = connection_string.strip()
 
-            logger.info(f"Connecting to MongoDB Atlas: {connection_string.split('@')[-1]}")
+            logger.info(f"Connecting to MongoDB: {connection_string.split('@')[-1]}")
 
-            # Create client with proper configuration
+            # Create client with proper configuration for both local and cloud
             cls._client = AsyncIOMotorClient(
                 connection_string,
-                serverSelectionTimeoutMS=5000,
-                connectTimeoutMS=10000,
-                maxPoolSize=10,
-                minPoolSize=5
+                serverSelectionTimeoutMS=15000, # Increased timeout for cloud
+                connectTimeoutMS=20000,
+                maxPoolSize=50,
+                minPoolSize=10,
+                retryWrites=True,
+                retryReads=True
             )
 
             # Get database reference
@@ -62,29 +67,21 @@ class Database:
             try:
                 await cls._client.admin.command('ping')
                 cls._is_connected = True
-                logger.info("Connected to MongoDB Atlas successfully!")
-                print("Connected to MongoDB Atlas successfully!")
-
-                # Log connection details
-                server_info = await cls._client.server_info()
-                logger.info(f"MongoDB version: {server_info.get('version', 'Unknown')}")
+                logger.info("Connected to MongoDB successfully!")
+                print("Connected to MongoDB successfully!")
 
             except (ConnectionFailure, ServerSelectionTimeoutError) as ping_error:
-                logger.warning(f"MongoDB Atlas ping failed: {ping_error}")
-                print(f"MongoDB Atlas not available - continuing without database")
+                logger.error(f"MongoDB connection failed: {ping_error}")
+                print(f"ERROR: Could not connect to MongoDB at {connection_string.split('@')[-1]}")
+                print("HINT: If using Atlas, ensure 'dnspython' is installed and your IP is whitelisted.")
                 # Reset state since ping failed
                 cls._client = None
                 cls._db = None
                 cls._is_connected = False
 
         except Exception as e:
-            logger.warning(f"Failed to connect to MongoDB Atlas: {e}")
-            print(f"MongoDB Atlas not available - continuing without database")
-            # Reset state but don't raise exception
-            cls._client = None
-            cls._db = None
-            cls._is_connected = False
-            # Reset state but don't raise exception
+            logger.critical(f"FATAL Exception during MongoDB connection: {e}")
+            print(f"CRITICAL ERROR: {str(e)}")
             cls._client = None
             cls._db = None
             cls._is_connected = False

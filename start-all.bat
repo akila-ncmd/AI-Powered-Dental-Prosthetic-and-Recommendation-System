@@ -3,6 +3,11 @@ echo ====================================================
 echo  Starting AI-Powered Dental System (Unified Run)
 echo ====================================================
 echo.
+echo NOTE: If you don't have MongoDB installed locally, please set your
+echo MONGODB_URL environment variable to your MongoDB Atlas connection string.
+echo (e.g. set MONGODB_URL=mongodb+srv://user:pass@cluster.mongodb.net/dental_ai)
+echo.
+
 
 echo [1/3] Starting Next.js Frontend (Port 3000)...
 start "Dental Frontend" cmd /k "npm run dev"

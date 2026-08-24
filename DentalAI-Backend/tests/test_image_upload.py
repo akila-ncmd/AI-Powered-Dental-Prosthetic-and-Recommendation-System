@@ -79,7 +79,10 @@ class TestImageUpload:
             # Verify response structure (Image model response)
             assert "_id" in result
             assert result["patient_id"] == patient_id
-            assert result["filename"] == "test_xray.jpg"
+            # The upload route appends a unique suffix so one patient's image
+            # can never overwrite another's, so match the stem and extension.
+            assert result["filename"].startswith("test_xray_")
+            assert result["filename"].endswith(".jpg")
             assert "file_path" in result
             assert "file_size" in result
             assert result["mime_type"] == "image/jpeg"

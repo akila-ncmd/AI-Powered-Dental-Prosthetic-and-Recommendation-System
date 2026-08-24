@@ -19,11 +19,45 @@ class RecommendationEngine:
     with machine learning to generate personalized treatment recommendations
     """
     
+    # Largest absolute score change _calculate_ml_adjustment can return
+    # (5 age/budget + 8 risk/medical + 5 multi-condition + 3 success rate).
+    MAX_ML_ADJUSTMENT = 21
+
+    # How many ranked recommendations are surfaced, stored and learned from.
+    # These must agree: storing the full list while returning only the top N
+    # made the report page show recommendations the recommendations page never
+    # displayed, since the report reads them back out of MongoDB.
+    MAX_RECOMMENDATIONS = 5
+
+    # Case/spacing-insensitive map from a detected label to the knowledge
+    # base's canonical spelling. Populated in __init__ from the knowledge base
+    # itself, plus the trained model's own class names, so the two cannot drift
+    # apart again. See canonical_condition().
+    CONDITION_ALIASES: Dict[str, str] = {}
+
     def __init__(self):
         self.treatment_knowledge_base = self._initialize_treatment_knowledge_base()
         self.condition_severity_weights = self._initialize_condition_weights()
         self.age_group_factors = self._initialize_age_factors()
         self.medical_condition_modifiers = self._initialize_medical_modifiers()
+        self.CONDITION_ALIASES = self._initialize_condition_aliases()
+
+    def _initialize_condition_aliases(self) -> Dict[str, str]:
+        """Every condition label the system knows, keyed case-insensitively."""
+        aliases: Dict[str, str] = {}
+        for canonical in self.condition_severity_weights:
+            aliases[canonical.lower()] = canonical
+        for treatment_data in self.treatment_knowledge_base.values():
+            for canonical in treatment_data["conditions"]:
+                aliases[canonical.lower()] = canonical
+        # Explicit entries for the YOLO class names that differ only by case,
+        # so a reader can see the mapping without running the code.
+        aliases.update({
+            "missing teeth": "Missing Teeth",
+            "periapical lesion": "Periapical Lesion",
+            "impacted tooth": "Impacted Tooth",
+        })
+        return aliases
         
     def _initialize_treatment_knowledge_base(self) -> Dict[str, Dict[str, Any]]:
         """Initialize comprehensive treatment knowledge base"""
@@ -292,14 +326,18 @@ class RecommendationEngine:
             
             # Sort by suitability score
             recommendations.sort(key=lambda x: x["suitability_score"], reverse=True)
-            
+
+            # Everything downstream - the API response, MongoDB and the
+            # learning log - must see the same ranked set.
+            top_recommendations = recommendations[:self.MAX_RECOMMENDATIONS]
+
             # Store recommendations in database
-            await self._store_recommendations(patient_id, recommendations)
-            
+            await self._store_recommendations(patient_id, top_recommendations)
+
             # Learn from this recommendation generation
-            await self._update_learning_data(patient_id, detected_conditions, recommendations)
-            
-            return recommendations[:5]  # Return top 5 recommendations
+            await self._update_learning_data(patient_id, detected_conditions, top_recommendations)
+
+            return top_recommendations
             
         except Exception as e:
             logger.error(f"Error generating recommendations: {e}")
@@ -311,22 +349,29 @@ class RecommendationEngine:
         detected_conditions: List[str]
     ) -> List[Dict[str, Any]]:
         """Generate initial recommendations using rule-based logic"""
-        recommendations = []
-        
+        # Keyed by treatment name: a treatment that addresses several of the
+        # detected conditions must appear once, not once per condition.
+        by_treatment: Dict[str, Dict[str, Any]] = {}
+
         for condition in detected_conditions:
+            # Normalise once so the stored label, the rationale text and the
+            # severity weight all agree with the knowledge base's spelling.
+            condition = self.canonical_condition(condition)
+
             # Find suitable treatments for this condition
             suitable_treatments = self._find_suitable_treatments(condition)
             
             for treatment_name, treatment_data in suitable_treatments.items():
                 # Calculate base suitability score
                 base_score = self._calculate_base_suitability(
-                    treatment_data, patient_data, condition
+                    treatment_data, patient_data, condition, treatment_name
                 )
                 
                 # Create recommendation object
                 rec = {
                     "treatment": treatment_name,
                     "condition": condition,
+                    "conditions_addressed": [condition],
                     "cost_estimate": f"LKR {treatment_data['cost_range'][0]:,} - LKR {treatment_data['cost_range'][1]:,}",
                     "cost_min": treatment_data['cost_range'][0],
                     "cost_max": treatment_data['cost_range'][1],
@@ -340,15 +385,42 @@ class RecommendationEngine:
                     "cons": treatment_data['cons'],
                     "contraindications": treatment_data.get('contraindications', [])
                 }
-                
-                recommendations.append(rec)
-        
-        return recommendations
+
+                existing = by_treatment.get(treatment_name)
+                if existing is None:
+                    by_treatment[treatment_name] = rec
+                else:
+                    # Record that this treatment also covers the new condition,
+                    # and keep the scoring from whichever condition rates higher.
+                    merged = existing["conditions_addressed"] + [condition]
+                    if base_score > existing["suitability_score"]:
+                        rec["conditions_addressed"] = merged
+                        by_treatment[treatment_name] = rec
+                    else:
+                        existing["conditions_addressed"] = merged
+
+        return list(by_treatment.values())
     
+    def canonical_condition(self, condition: str) -> str:
+        """Map a raw YOLO class label onto the knowledge base's spelling.
+
+        The trained model emits "Missing teeth", "Periapical lesion" and
+        "impacted tooth", while the knowledge base is keyed on "Missing Teeth",
+        "Periapical Lesion" and "Impacted Tooth". Because both lookups were
+        exact string matches, those three classes silently resolved to zero
+        treatments - including Missing Teeth, the primary indication for every
+        prosthetic option in the knowledge base.
+        """
+        if not condition:
+            return ""
+        key = " ".join(str(condition).split()).lower()
+        return self.CONDITION_ALIASES.get(key, str(condition).strip())
+
     def _find_suitable_treatments(self, condition: str) -> Dict[str, Dict[str, Any]]:
         """Find treatments suitable for a given condition"""
         suitable = {}
-        
+        condition = self.canonical_condition(condition)
+
         for treatment_name, treatment_data in self.treatment_knowledge_base.items():
             if condition in treatment_data['conditions']:
                 suitable[treatment_name] = treatment_data
@@ -359,7 +431,8 @@ class RecommendationEngine:
         self, 
         treatment_data: Dict[str, Any], 
         patient_data: Dict[str, Any], 
-        condition: str
+        condition: str,
+        treatment_name: str = ""
     ) -> int:
         """Calculate base suitability score using rule-based logic"""
         base_score = 80  # Starting score
@@ -390,7 +463,11 @@ class RecommendationEngine:
             if med_condition in self.medical_condition_modifiers:
                 modifiers = self.medical_condition_modifiers[med_condition]
                 
-                if 'implant' in treatment_data['conditions'][0].lower():
+                # Match on the TREATMENT name. The previous check looked at
+                # treatment_data['conditions'][0], which is a detected-condition
+                # label (e.g. "Missing Teeth") and never contains "implant", so
+                # the implant modifier could never fire.
+                if 'implant' in treatment_name.lower():
                     base_score += modifiers.get('implant_modifier', 0)
                 if treatment_data['risk_level'] in ['medium', 'high']:
                     base_score += modifiers.get('surgery_modifier', 0)
@@ -405,7 +482,9 @@ class RecommendationEngine:
             base_score -= 10
         
         # Condition severity factor
-        condition_weight = self.condition_severity_weights.get(condition, 0.5)
+        condition_weight = self.condition_severity_weights.get(
+            self.canonical_condition(condition), 0.5
+        )
         base_score = int(base_score * (0.8 + condition_weight * 0.4))
         
         return max(0, min(100, base_score))
@@ -429,7 +508,14 @@ class RecommendationEngine:
         adjusted_score = max(0, min(100, original_score + ml_adjustment))
         
         recommendation['suitability_score'] = adjusted_score
-        recommendation['ml_confidence'] = abs(ml_adjustment) / 20  # Normalize to 0-1
+        # Map the signed ML adjustment onto [0, 1] around a neutral 0.5.
+        # The previous formula, abs(adjustment) / 20, exceeded 1.0 at the
+        # extremes and reported 0.0 confidence whenever the adjustments
+        # cancelled out - i.e. it measured magnitude of correction, not
+        # confidence, and rose as the recommendation was penalised.
+        recommendation['ml_confidence'] = round(
+            min(1.0, max(0.0, 0.5 + ml_adjustment / (2 * self.MAX_ML_ADJUSTMENT))), 3
+        )
         
         return recommendation
     
@@ -474,8 +560,13 @@ class RecommendationEngine:
         elif age_norm < 0.3 and budget_norm > 0.7:  # Young with high budget
             adjustment += 5
         
-        # Risk-medical condition interaction
-        if med_conditions > 2 and risk_level > 2:  # Multiple conditions + high risk
+        # Risk-medical condition interaction.
+        # risk_level is encoded 1=low, 2=medium, 3=high. No treatment in the
+        # knowledge base is classified "high", so the original `> 2` could
+        # never fire. `>= 2` matches the convention the rule-based layer
+        # already uses in _calculate_base_suitability, which applies its
+        # surgery modifier to risk_level in ['medium', 'high'].
+        if med_conditions > 2 and risk_level >= 2:  # Multiple conditions + elevated risk
             adjustment -= 8
         elif med_conditions == 0 and risk_level == 1:  # No conditions + low risk
             adjustment += 8

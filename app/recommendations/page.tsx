@@ -56,20 +56,24 @@ export default function RecommendationsPage() {
          setLoading(true)
          setError(null)
 
-         const patientResponse = await fetch(`http://127.0.0.1:8000/patients/${patientId}`)
+         const patientResponse = await fetch(`/api/patients/${patientId}`)
          if (!patientResponse.ok) throw new Error("Failed to load patient data")
          
          const patient = await patientResponse.json()
          setPatientData(patient)
 
          const storedConditions = localStorage.getItem("detectedConditions")
-         if (storedConditions) {
-           const conditions = JSON.parse(storedConditions)
-           setDetectedConditions(conditions)
+         const conditions: string[] = storedConditions ? JSON.parse(storedConditions) : []
+         setDetectedConditions(conditions)
+
+         if (conditions.length > 0) {
            await generateAIRecommendations(patientId, conditions)
          } else {
-           setDetectedConditions([])
-           await generateAIRecommendations(patientId, ["Caries"])
+           // Never substitute a placeholder diagnosis: with no detections there
+           // is nothing to recommend, and inventing "Caries" would present a
+           // fabricated finding as an AI result.
+           setRecommendations([])
+           setError("No conditions were detected for this patient. Please run the X-ray analysis before generating a treatment plan.")
          }
        } catch (error) {
          setError(error instanceof Error ? error.message : "Failed to load data")
@@ -85,7 +89,7 @@ export default function RecommendationsPage() {
     try {
       setIsGeneratingAI(true)
       
-      const response = await fetch(`http://127.0.0.1:8000/ai-recommendations/${patientId}`, {
+      const response = await fetch(`/api/ai-recommendations/${patientId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ detected_conditions: conditions }),
@@ -105,7 +109,14 @@ export default function RecommendationsPage() {
 
   const handleRegenerateRecommendations = async () => {
     const patientId = localStorage.getItem("currentPatientId")
-    if (!patientId || !detectedConditions.length) return
+    if (!patientId) {
+      setError("No patient selected. Please start from the patient record page.")
+      return
+    }
+    if (!detectedConditions.length) {
+      setError("No conditions were detected for this patient. Please run the X-ray analysis first.")
+      return
+    }
     await generateAIRecommendations(patientId, detectedConditions)
   }
 

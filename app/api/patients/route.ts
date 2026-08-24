@@ -5,7 +5,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
 
     // Forward the request to the backend
-    const backendUrl = process.env.BACKEND_URL || 'http://localhost:8000';
+    const backendUrl = process.env.BACKEND_URL || 'http://127.0.0.1:8000';
     const backendResponse = await fetch(`${backendUrl}/patients`, {
       method: 'POST',
       headers: {
@@ -38,7 +38,7 @@ export async function POST(request: NextRequest) {
 export async function GET() {
   try {
     // Forward the request to the backend
-    const backendUrl = process.env.BACKEND_URL || 'http://localhost:8000';
+    const backendUrl = process.env.BACKEND_URL || 'http://127.0.0.1:8000';
     const backendResponse = await fetch(`${backendUrl}/patients`, {
       method: 'GET',
     });

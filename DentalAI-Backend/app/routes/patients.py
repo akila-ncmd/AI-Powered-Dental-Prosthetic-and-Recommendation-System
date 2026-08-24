@@ -1,8 +1,10 @@
+import re
+
 from fastapi import APIRouter, HTTPException
 from bson import ObjectId
 from app.database import Database
 from typing import List, Dict, Any
-from app.models import Patient
+from app.models import Patient, PatientCreate
 from datetime import datetime
 from pydantic import ValidationError
 
@@ -35,19 +37,26 @@ async def search_patients(q: str = ""):
         patients = []
         query = {}
         if q:
+            # Escape the term: unescaped input let a "(" abort the query (and
+            # a pattern like "(a+)+$" pin the server on backtracking).
+            safe_q = re.escape(q)
             query = {
                 "$or": [
-                    {"name": {"$regex": q, "$options": "i"}},
-                    {"nic": {"$regex": q, "$options": "i"}}
+                    {"name": {"$regex": safe_q, "$options": "i"}},
+                    {"nic": {"$regex": safe_q, "$options": "i"}}
                 ]
             }
 
         async for patient_doc in db.patients.find(query).limit(10):
             patient = dict(patient_doc)
-            patient["id"] = patient["_id"]
+            # str() is required: a raw ObjectId is not JSON serializable and
+            # made this endpoint 500 whenever the search actually matched.
+            patient["id"] = str(patient["_id"])
             del patient["_id"]
             patients.append(patient)
         return patients
+    except HTTPException:
+        raise
     except Exception as e:
         return []
 
@@ -86,12 +95,16 @@ async def get_patient(patient_id: str):
 
 
 @router.post("/patients")
-async def create_patient(patient_data: Dict[str, Any]):
+async def create_patient(patient: PatientCreate):
     try:
         try:
             db = Database.get_database()
         except ConnectionError:
             raise HTTPException(status_code=503, detail="Database not available")
+
+        # mode="json" turns the enum members into the plain strings the rest of
+        # the system (and the existing documents) already use.
+        patient_data = patient.model_dump(mode="json")
 
         # Add MongoDB fields
         patient_data["_id"] = ObjectId()
@@ -104,6 +117,10 @@ async def create_patient(patient_data: Dict[str, Any]):
 
         return {"id": patient_id, "message": "Patient created successfully"}
 
+    except HTTPException:
+        # Preserve the 503 the database check above already decided on;
+        # the catch-all below would otherwise rewrap it as a 500.
+        raise
     except ConnectionError:
         raise HTTPException(status_code=503, detail="Database not available")
     except Exception as e:
@@ -123,5 +140,9 @@ async def create_patient_raw(patient_data: Dict[str, Any]):
         patient_data["id"] = str(result.inserted_id)
         del patient_data["_id"]
         return patient_data
+    except HTTPException:
+        raise
+    except ConnectionError:
+        raise HTTPException(status_code=503, detail="Database not available")
     except Exception as e:
         raise HTTPException(status_code=500, detail="Failed to create patient")

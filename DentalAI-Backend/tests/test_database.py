@@ -7,11 +7,19 @@ class TestDatabase:
 
     @pytest.fixture(autouse=True)
     def reset_database_state(self):
-        """Reset database state before each test"""
+        """Reset database state before and after each test.
+
+        Database is a singleton, so a test that leaves a mock in _db leaks it
+        into every test that runs later in the session — the rest of the suite
+        would then await a MagicMock instead of getting a clean ConnectionError.
+        """
         Database._client = None
         Database._db = None
         Database._is_connected = False
         yield
+        Database._client = None
+        Database._db = None
+        Database._is_connected = False
 
     def test_get_database_without_connection(self):
         """Test getting database when not connected"""

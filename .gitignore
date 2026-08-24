@@ -33,3 +33,7 @@ DentalAI-Backend/venv/
 pdf_api/venv/  
 DentalAI-Backend/app/uploads/  
 DentalAI-Backend/app/outputs/ 
+
+# Python bytecode (was partially tracked; do not ship to the Space)
+__pycache__/
+*.pyc

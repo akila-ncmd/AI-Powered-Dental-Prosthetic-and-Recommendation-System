@@ -13,32 +13,40 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# 2. Install system libraries required by OpenCV & YOLO
+# 2. Install system libraries required by OpenCV (modern replacement for libgl1-mesa-glx)
 RUN apt-get update && apt-get install -y \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     poppler-utils \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# 3. Copy everything into the container
-COPY . /app
 
-# 4. Install Next.js Frontend Dependencies and Build
+# 3. Copy everything into the container
+COPY --chown=1000:1000 . /app
+
+# 4. Create necessary directories and set permissions
+RUN mkdir -p /app/DentalAI-Backend/app/uploads /app/DentalAI-Backend/app/outputs/predictions && \
+    chmod -R 777 /app/DentalAI-Backend/app/uploads /app/DentalAI-Backend/app/outputs
+
+# 5. Install Next.js Frontend Dependencies and Build
 RUN npm install
 RUN npm run build
 
-# 5. Install FastAPI Backend Dependencies
+# 6. Install FastAPI Backend Dependencies
 RUN pip install --upgrade pip
 RUN pip install --no-cache-dir -r DentalAI-Backend/requirements.txt
 
-# 6. Install Flask PDF API Dependencies
+# 7. Install Flask PDF API Dependencies
 RUN pip install --no-cache-dir -r pdf_api/requirements.txt
 
-# 7. Make the startup script executable
+# 8. Make the startup script executable
 RUN chmod +x start-hf.sh
 
-# 8. Expose Hugging Face's required port (7860)
+# 9. Expose Hugging Face's required port (7860)
 EXPOSE 7860
 
-# 9. Start the orchestration script
+# 10. Start the orchestration script
 CMD ["./start-hf.sh"]

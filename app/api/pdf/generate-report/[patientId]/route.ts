@@ -2,14 +2,16 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export async function POST(
   request: NextRequest,
-  { params }: { params: { patientId: string } }
+  { params }: { params: Promise<{ patientId: string }> }
 ) {
   try {
-    const { patientId } = params;
+    // Next.js 15 makes route params a Promise; destructuring it synchronously
+    // yields undefined and sends "/patients/undefined" to the backend.
+    const { patientId } = await params;
     const body = await request.json();
 
     // Forward the request to the PDF API
-    const pdfApiUrl = 'http://localhost:5000';
+    const pdfApiUrl = process.env.PDF_API_URL || 'http://127.0.0.1:5000';
     const pdfResponse = await fetch(`${pdfApiUrl}/generate-report/${patientId}`, {
       method: 'POST',
       headers: {

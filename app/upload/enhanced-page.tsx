@@ -101,8 +101,10 @@ export default function EnhancedUploadPage() {
             setResult(data)
 
             if (data.output_image) {
-                setAnnotatedImageUrl(data.output_image)
-                localStorage.setItem("annotatedImage", data.output_image)
+                // Add a timestamp to bust the browser cache for the annotated image
+                const timestampedUrl = `${data.output_image}?t=${Date.now()}`;
+                setAnnotatedImageUrl(timestampedUrl);
+                localStorage.setItem("annotatedImage", timestampedUrl);
             }
 
             if (selectedFile) {

@@ -52,6 +52,11 @@ class Habit(str, Enum):
     SMOKING = "Smoking"
     ALCOHOL = "Alcohol"
     BRUXISM = "Bruxism"
+    # The patient-data form offers these three as well; without them here the
+    # form's own options would fail validation.
+    BETEL_CHEWING = "Betel Chewing"
+    COFFEE = "Coffee"
+    TEA = "Tea"
 
 
 class PastDentalTreatment(str, Enum):
@@ -128,6 +133,26 @@ class Patient(BaseModel):
                 "past_dental_treatments": ["Fillings", "Crowns"]
             }
         }
+
+
+class PatientCreate(BaseModel):
+    """Request body for POST /patients.
+
+    Mirrors Patient minus the server-owned fields (_id, created_at,
+    updated_at), so a malformed submission is rejected with a 422 instead of
+    being written to MongoDB unvalidated.
+    """
+    name: str = Field(..., min_length=1, max_length=100, description="Patient's full name")
+    nic: str = Field(..., min_length=1, max_length=20, description="National ID number")
+    age: int = Field(..., ge=1, le=120, description="Patient's age in years")
+    gender: Gender = Field(..., description="Patient's gender")
+    budget: int = Field(..., ge=10000, description="Patient's budget in LKR")
+    medical_conditions: List[MedicalCondition] = Field(default_factory=list, description="List of medical conditions")
+    other_medical_condition: Optional[str] = Field(None, max_length=200, description="Other medical condition if specified")
+    allergies: Optional[str] = Field(None, max_length=500, description="Patient allergies")
+    habits: List[Habit] = Field(default_factory=list, description="Patient habits")
+    past_dental_treatments: List[PastDentalTreatment] = Field(default_factory=list, description="Past dental treatments")
+    family_dental_history: Optional[str] = Field(None, max_length=500, description="Family dental history")
 
 
 # Detected Condition Model

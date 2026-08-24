@@ -12,7 +12,9 @@ from bson import ObjectId
 from typing import List
 from pydantic import ValidationError
 import os
+import re
 import shutil
+import uuid
 import cv2
 import logging
 from datetime import datetime
@@ -26,8 +28,28 @@ UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
 OUTPUT_FOLDER = os.path.join(BASE_DIR, "outputs")
 MODEL_PATH = os.path.join(BASE_DIR, "model", "best.pt")
 
+PREDICTION_FOLDER = os.path.join(OUTPUT_FOLDER, "predictions")
+
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+os.makedirs(PREDICTION_FOLDER, exist_ok=True)
+
+# Extensions cv2.imwrite can reliably encode; anything else is stored as .png
+SAFE_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
+
+
+def sanitize_upload_filename(filename: str) -> str:
+    """Reduce a client-supplied filename to a safe basename.
+
+    Strips any directory component so the result can never escape the target
+    folder, then keeps only characters that are safe in a path and a URL.
+    """
+    # basename() alone is not enough on Linux for Windows-style separators
+    base = os.path.basename(str(filename or "").replace("\\", "/").rsplit("/", 1)[-1])
+    stem, ext = os.path.splitext(base)
+    stem = re.sub(r"[^A-Za-z0-9._-]", "_", stem).strip("._") or "upload"
+    ext = ext.lower() if ext.lower() in SAFE_IMAGE_SUFFIXES else ".png"
+    return f"{stem[:80]}{ext}"
 
 # --------------------------
 # Load YOLO model
@@ -95,9 +117,23 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
+# Origins are read from ALLOWED_ORIGINS (comma-separated) so deployments can
+# widen this without shipping a wildcard. A wildcard is invalid alongside
+# allow_credentials=True and would expose patient data to any site.
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "ALLOWED_ORIGINS",
+        "http://localhost:3000,http://localhost:3001,"
+        "http://127.0.0.1:3000,http://127.0.0.1:3001,"
+        "http://localhost:7860,http://127.0.0.1:7860",
+    ).split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://127.0.0.1:3000", "http://127.0.0.1:3001"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -177,7 +213,13 @@ async def upload_image(patient_id: str, file: UploadFile = File(...), db=Depends
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="File must be an image")
 
-    file_path = os.path.join(UPLOAD_FOLDER, file.filename)
+    # Never trust the client-supplied name as a path, and keep it unique so one
+    # patient's upload cannot overwrite another's radiograph.
+    safe_filename = sanitize_upload_filename(file.filename)
+    stem, ext = os.path.splitext(safe_filename)
+    stored_filename = f"{stem}_{uuid.uuid4().hex[:12]}{ext}"
+
+    file_path = os.path.join(UPLOAD_FOLDER, stored_filename)
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
@@ -187,7 +229,7 @@ async def upload_image(patient_id: str, file: UploadFile = File(...), db=Depends
     image = Image(
         patient_id=ObjectId(patient_id),
         image_type="original",
-        filename=file.filename,
+        filename=stored_filename,
         file_path=file_path,
         file_size=os.path.getsize(file_path),
         mime_type=file.content_type or "image/jpeg",
@@ -223,30 +265,74 @@ async def get_patient_images(patient_id: str, db=Depends(get_database)):
 @app.post("/predict")
 async def predict(request: Request, file: UploadFile = File(...)):
     try:
-        input_path = os.path.join(UPLOAD_FOLDER, file.filename)
+        # Strip any directory component from the client-supplied name, then give
+        # this run its own unique output name so a failed write can never fall
+        # back to a previous patient's annotated image.
+        safe_filename = sanitize_upload_filename(file.filename)
+        run_id = uuid.uuid4().hex[:12]
+        stem, ext = os.path.splitext(safe_filename)
+        output_filename = f"{stem}_{run_id}{ext}"
+
+        input_path = os.path.join(UPLOAD_FOLDER, f"{stem}_{run_id}{ext}")
+
+        logging.info(f"Starting prediction for: {safe_filename} (run {run_id})")
+
         with open(input_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
+        prediction_dir = PREDICTION_FOLDER
+        os.makedirs(prediction_dir, exist_ok=True)
+
         results = model.predict(
             source=input_path,
-            save=True,
+            save=False, # We handle saving manually for better control
             project=OUTPUT_FOLDER,
             name="predictions",
-            exist_ok=True
+            exist_ok=True,
+            conf=0.25 # Ensure we catch relevant detections
         )
 
         detected_classes = set()
+        annotated_image_path = os.path.join(prediction_dir, output_filename)
+        annotated_saved = False
+
+        if not results:
+            logging.warning("No results returned from model")
 
         for r in results:
+            # 1. Extract class names for response
             if hasattr(r, 'names') and r.boxes is not None:
                 for idx, cls_id in enumerate(r.boxes.cls):
                     cls_name = r.names[int(cls_id)]
                     detected_classes.add(cls_name)
+            
+            # 2. Plot the result. line_width/font_size are deliberately left
+            # to Ultralytics' automatic scaling: the previous hardcoded
+            # line_width=3, font_size=20 rendered labels so large on a 640px
+            # radiograph that they covered the entire dentition and obscured
+            # the anatomy the boxes were pointing at.
+            res_plotted = r.plot(
+                labels=True,
+                boxes=True,
+                probs=False
+            )
+            
+            # Save the annotated image
+            annotated_saved = bool(cv2.imwrite(annotated_image_path, res_plotted))
+            if not annotated_saved:
+                logging.error(f"CRITICAL: Failed to save annotated image to {annotated_image_path}")
+            else:
+                logging.info(f"Successfully saved annotated image to {annotated_image_path}")
+            break
 
-        annotated_image_path = os.path.join(OUTPUT_FOLDER, "predictions", file.filename)
-        annotated_url = ""
-        if os.path.exists(annotated_image_path):
-            annotated_url = f"{str(request.base_url)[:-1]}/outputs/predictions/{file.filename}"
+        # Only advertise a URL when THIS run actually wrote the file. Trusting
+        # os.path.exists here would happily serve a previous run's annotation.
+        if annotated_saved and os.path.exists(annotated_image_path):
+            annotated_url = f"/api/outputs/predictions/{output_filename}"
+            logging.info(f"Returning annotated image URL: {annotated_url}")
+        else:
+            logging.warning(f"No annotated image produced for run {run_id}")
+            annotated_url = ""
 
         return JSONResponse({
             "message": "Prediction successful",
@@ -312,7 +398,8 @@ async def get_patient_latest_image(patient_id: str, db=Depends(get_database)):
     if not latest_image:
         return {"image_url": None, "detected_conditions": []}
 
-    image_url = f"http://127.0.0.1:8000/outputs/predictions/{latest_image['filename']}"
+    # Use relative URL for frontend proxy compatibility
+    image_url = f"/api/outputs/predictions/{latest_image['filename']}"
     detected_conditions = latest_image.get("annotations", {}).get("detected_conditions", [])
 
     return {
@@ -389,17 +476,27 @@ async def generate_ai_recommendations(
                 raise HTTPException(status_code=404, detail="Patient not found")
 
             if not detected_conditions:
-                # If no conditions provided, try to get from database or use default
+                # Fall back to previously stored detections only - never invent
+                # a condition the model did not actually report.
                 conditions_cursor = db.detected_conditions.find({"patient_id": ObjectId(patient_id)})
                 stored_conditions = []
                 async for condition in conditions_cursor:
                     stored_conditions.append(condition["condition_type"])
 
-                detected_conditions = stored_conditions if stored_conditions else ["Caries"]
-        else:
-            # Database not available, use provided conditions or default
-            if not detected_conditions:
-                detected_conditions = ["Caries"]
+                detected_conditions = stored_conditions
+
+        if not detected_conditions:
+            # No findings is a valid clinical result: return an empty plan
+            # rather than a treatment for a fabricated diagnosis.
+            logging.info(f"No detected conditions for patient {patient_id}; returning empty plan")
+            return {
+                "patient_id": patient_id,
+                "detected_conditions": [],
+                "recommendations": [],
+                "generated_at": datetime.utcnow().isoformat(),
+                "engine_version": "1.0",
+                "message": "No conditions were detected, so no treatment recommendations were generated."
+            }
 
         logging.info(f"Generating recommendations for patient {patient_id} with conditions: {detected_conditions}")
 
@@ -434,13 +531,14 @@ async def generate_ai_recommendations(
             "engine_version": "1.0"
         }
 
+    except HTTPException:
+        # Preserve the 400/404 the validation above already decided on
+        raise
     except ValueError as ve:
         logging.error(f"Validation error in AI recommendations: {ve}")
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
-        logging.error(f"Error generating AI recommendations: {e}")
-        import traceback
-        traceback.print_exc()
+        logging.exception(f"Error generating AI recommendations: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate recommendations")
 
 @app.get("/ai-recommendations/{patient_id}")
@@ -487,6 +585,8 @@ async def get_ai_recommendations(patient_id: str, db=Depends(get_database)):
             "count": len(recommendations_list)
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logging.error(f"Error fetching AI recommendations: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch recommendations")

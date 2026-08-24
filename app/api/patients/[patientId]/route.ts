@@ -2,13 +2,15 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { patientId: string } }
+  { params }: { params: Promise<{ patientId: string }> }
 ) {
   try {
-    const { patientId } = params;
+    // Next.js 15 makes route params a Promise; destructuring it synchronously
+    // yields undefined and sends "/patients/undefined" to the backend.
+    const { patientId } = await params;
 
     // Forward the request to the backend
-    const backendUrl = process.env.BACKEND_URL || 'http://localhost:8000';
+    const backendUrl = process.env.BACKEND_URL || 'http://127.0.0.1:8000';
     const backendResponse = await fetch(`${backendUrl}/patients/${patientId}`, {
       method: 'GET',
     });

@@ -8,6 +8,7 @@ import io
 import re
 import requests
 import time
+import uuid
 from PIL import Image
 try:
     from database import get_db, is_db_connected
@@ -27,6 +28,22 @@ app = Flask(__name__)
 
 # Allow all origins (or restrict to your Next.js origin if you prefer)
 CORS(app, resources={r"/*": {"origins": "*"}})
+
+def server_error(context, exc, status=500):
+    """Log full detail server-side; return an opaque error to the client.
+
+    Returning str(exc) - let alone traceback.format_exc() - hands anyone who
+    can reach the endpoint our filesystem paths, the MongoDB URI (pymongo
+    embeds it in connection errors) and the internal call structure. The
+    error_id lets a user quote the failure without us disclosing any of that.
+    """
+    error_id = uuid.uuid4().hex[:8]
+    app.logger.exception("[%s] %s: %s", error_id, context, exc)
+    return jsonify({
+        "error": "Internal server error. Please contact the administrator.",
+        "error_id": error_id,
+    }), status
+
 
 def sanitize_filename(name):
     """Sanitize filename to remove invalid characters for Windows and Linux."""
@@ -60,8 +77,23 @@ def draw_text_with_page_break(c, text, x, y, width, height, font_size=12):
         y -= 1*cm
     return y
 
+# Points-per-inch used by ReportLab; radiographs are resampled for this DPI so
+# the model's annotation boxes stay legible in the printed report.
+PDF_TARGET_DPI = 200
+
+
 def download_and_resize_image(url_or_data, max_width=5*cm, max_height=5*cm):
-    """Download image from URL or process base64 data and resize it to fit within max dimensions."""
+    """Download or decode an image and resample it for the PDF.
+
+    Returns ``(buffer, aspect_ratio)`` so the caller can draw it without
+    distorting it, or ``None`` if the image could not be obtained.
+
+    ``max_width``/``max_height`` are ReportLab points (the size the image will
+    occupy on the page); they are converted to a pixel budget at
+    ``PDF_TARGET_DPI`` before resampling. Comparing them against pixel counts
+    directly - as this function used to - downsampled a 2048px radiograph to
+    roughly 142px.
+    """
     print(f"DEBUG: download_and_resize_image called with: {repr(url_or_data[:100] if url_or_data else None)}...")
     if not url_or_data or url_or_data.startswith('blob:'):
         print("DEBUG: Returning None - no data or blob URL")
@@ -75,6 +107,12 @@ def download_and_resize_image(url_or_data, max_width=5*cm, max_height=5*cm):
             img_data = base64.b64decode(encoded)
             img = Image.open(io.BytesIO(img_data))
         else:
+            # Handle relative /api/ URLs by mapping to internal backend
+            if url_or_data.startswith('/api/'):
+                url_or_data = f"http://127.0.0.1:8000{url_or_data[4:]}"
+            elif url_or_data.startswith('/'):
+                url_or_data = f"http://127.0.0.1:8000{url_or_data}"
+                
             print(f"DEBUG: Downloading from URL: {url_or_data}")
             # Handle URL
             response = requests.get(url_or_data, timeout=10)
@@ -88,28 +126,49 @@ def download_and_resize_image(url_or_data, max_width=5*cm, max_height=5*cm):
         # Calculate aspect ratio
         aspect_ratio = img.width / img.height
 
-        # Resize maintaining aspect ratio
-        if img.width > max_width or img.height > max_height:
-            if aspect_ratio > 1:  # Wider than tall
-                new_width = min(max_width, img.width)
-                new_height = new_width / aspect_ratio
-            else:  # Taller than wide
-                new_height = min(max_height, img.height)
-                new_width = new_height * aspect_ratio
+        # Convert the on-page size (points) into a pixel budget at target DPI
+        max_px_w = max(1, int(max_width / 72.0 * PDF_TARGET_DPI))
+        max_px_h = max(1, int(max_height / 72.0 * PDF_TARGET_DPI))
 
-            img = img.resize((int(new_width), int(new_height)), Image.Resampling.LANCZOS)
+        # Resize maintaining aspect ratio, never scaling up
+        scale = min(max_px_w / img.width, max_px_h / img.height, 1.0)
+        if scale < 1.0:
+            new_width = max(1, int(img.width * scale))
+            new_height = max(1, int(img.height * scale))
+            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
 
         # Convert back to bytes
         img_buffer = io.BytesIO()
         img.save(img_buffer, format='JPEG', quality=95)  # Higher quality
         img_buffer.seek(0)
-        print("DEBUG: Image processed successfully")
-        return img_buffer
+        print(f"DEBUG: Image processed successfully ({img.width}x{img.height})")
+        return img_buffer, aspect_ratio
     except Exception as e:
         print(f"Error downloading/resizing image: {e}")
         import traceback
         print("Image processing traceback:", traceback.format_exc())
         return None
+
+def draw_image_fitted(c, image, x, bottom, box_w, box_h):
+    """Draw a (buffer, aspect_ratio) pair centred inside a box, undistorted.
+
+    Forcing a fixed width and height - as the report used to - squeezes a
+    panoramic radiograph (roughly 2:1) into a square and misrepresents the
+    anatomy and the annotation boxes drawn on it.
+    """
+    buffer, aspect_ratio = image
+    draw_w = box_w
+    draw_h = box_w / aspect_ratio
+    if draw_h > box_h:
+        draw_h = box_h
+        draw_w = box_h * aspect_ratio
+
+    off_x = x + (box_w - draw_w) / 2
+    off_y = bottom + (box_h - draw_h) / 2
+
+    buffer.seek(0)
+    c.drawImage(ImageReader(buffer), off_x, off_y, width=draw_w, height=draw_h, mask='auto')
+
 
 @app.route("/", methods=["GET"])
 def home():
@@ -126,7 +185,7 @@ def add_patient():
         result = db.patients.insert_one(data)
         return jsonify({"message": "Patient added successfully", "id": str(result.inserted_id)}), 201
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return server_error("add_patient", e)
 
 @app.route("/patients", methods=["GET"])
 def get_patients():
@@ -137,7 +196,7 @@ def get_patients():
             patient["_id"] = str(patient["_id"])
         return jsonify(patients), 200
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return server_error("get_patients", e)
 
 @app.route("/patient/<id>", methods=["GET"])
 def get_patient(id):
@@ -150,7 +209,7 @@ def get_patient(id):
         else:
             return jsonify({"error": "Patient not found"}), 404
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return server_error("get_patient", e)
 
 @app.route("/patient/<id>", methods=["DELETE"])
 def delete_patient(id):
@@ -162,7 +221,7 @@ def delete_patient(id):
         else:
             return jsonify({"error": "Patient not found"}), 404
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return server_error("delete_patient", e)
 
 @app.route("/test-pdf", methods=["GET"])
 def test_pdf():
@@ -231,8 +290,7 @@ def test_pdf():
         return response
 
     except Exception as e:
-        print(f"Test PDF error: {e}")
-        return jsonify({"error": str(e)}), 500
+        return server_error("test_pdf", e)
 
 @app.route("/generate-report/<patient_id>", methods=["GET", "POST", "OPTIONS"])
 def generate_report_from_db(patient_id):
@@ -282,7 +340,10 @@ def generate_report_from_db(patient_id):
             print(f"DEBUG: Found {len(detected_conditions_docs)} detected conditions: {detected_conditions}")
 
             # Fetch recommendations from MongoDB
-            recommendations_docs = list(db.recommendations.find({"patient_id": ObjectId(patient_id)}))
+            # recommendation_engine._store_recommendations writes patient_id as
+            # a string, so querying with ObjectId here matched nothing and the
+            # report came out with an empty recommendations section.
+            recommendations_docs = list(db.recommendations.find({"patient_id": str(patient_id)}))
             recommendations = []
             for rec in recommendations_docs:
                 recommendations.append({
@@ -304,7 +365,7 @@ def generate_report_from_db(patient_id):
                 "image_type": "original"
             })
             if original_image:
-                uploaded_image_url = f"http://127.0.0.1:8004/uploads/{original_image['filename']}"
+                uploaded_image_url = f"http://127.0.0.1:8000/uploads/{original_image['filename']}"
 
             # Get annotated image
             annotated_image = db.images.find_one({
@@ -312,7 +373,7 @@ def generate_report_from_db(patient_id):
                 "image_type": "annotated"
             })
             if annotated_image:
-                annotated_image_url = f"http://127.0.0.1:8004/outputs/predictions/{annotated_image['filename']}"
+                annotated_image_url = f"http://127.0.0.1:8000/outputs/predictions/{annotated_image['filename']}"
 
         print(f"DEBUG: Patient data: {patient_data}")
         print(f"DEBUG: Detected conditions: {detected_conditions}")
@@ -398,21 +459,21 @@ def generate_report_from_db(patient_id):
                     print("DEBUG: Drawing both images")
                     c.setFont("Helvetica", 10)
                     c.drawString(2*cm, y, "Original X-ray")
-                    c.drawImage(ImageReader(uploaded_img), 2*cm, y - 5*cm, width=5*cm, height=5*cm, mask='auto')
+                    draw_image_fitted(c, uploaded_img, 2*cm, y - 5*cm, 5*cm, 5*cm)
                     c.drawString(10*cm, y, "AI-Analyzed X-ray")
-                    c.drawImage(ImageReader(annotated_img), 10*cm, y - 5*cm, width=5*cm, height=5*cm, mask='auto')
+                    draw_image_fitted(c, annotated_img, 10*cm, y - 5*cm, 5*cm, 5*cm)
                     y -= 6*cm
                 elif uploaded_img:
                     print("DEBUG: Drawing uploaded image only")
                     c.setFont("Helvetica", 10)
                     c.drawString(6*cm, y, "Original X-ray")
-                    c.drawImage(ImageReader(uploaded_img), 6*cm, y - 5*cm, width=5*cm, height=5*cm, mask='auto')
+                    draw_image_fitted(c, uploaded_img, 6*cm, y - 5*cm, 5*cm, 5*cm)
                     y -= 6*cm
                 elif annotated_img:
                     print("DEBUG: Drawing annotated image only")
                     c.setFont("Helvetica", 10)
                     c.drawString(6*cm, y, "AI-Analyzed X-ray")
-                    c.drawImage(ImageReader(annotated_img), 6*cm, y - 5*cm, width=5*cm, height=5*cm, mask='auto')
+                    draw_image_fitted(c, annotated_img, 6*cm, y - 5*cm, 5*cm, 5*cm)
                     y -= 6*cm
                 else:
                     print("DEBUG: No images to draw")
@@ -523,10 +584,7 @@ def generate_report_from_db(patient_id):
         return response
 
     except Exception as e:
-        print("Error generating report:", e)
-        import traceback
-        print("Full traceback:", traceback.format_exc())
-        return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
+        return server_error("generate_report_from_db", e)
 
 
 if __name__ == "__main__":
