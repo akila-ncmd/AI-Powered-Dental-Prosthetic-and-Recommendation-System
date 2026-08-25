@@ -3,16 +3,9 @@
 
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
-from urllib.parse import quote_plus
 
 # Database connection configuration
 USE_DATABASE = True  # Enable database for PDF generation
-
-# MongoDB Atlas credentials
-username = "akila_user"
-password = "WGH7Qd8@apUNh$z"
-cluster = "cluster0.qwwrokd.mongodb.net"
-database_name = "dental_ai"
 
 # Global variables
 client = None
