@@ -6,14 +6,33 @@ Shows YOLO model performance metrics and sample predictions
 
 import os
 import sys
+import csv
+import json
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 from ultralytics import YOLO
-import pandas as pd
 from pathlib import Path
 import warnings
 warnings.filterwarnings('ignore')
+
+METRICS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "model_metrics.json")
+
+
+def load_recorded_metrics(path=METRICS_PATH):
+    """Return metrics measured by evaluate_model.py, or None if it never ran.
+
+    Callers must report the absence rather than substitute a placeholder. The
+    figures this script used to print (mAP 0.87, precision 0.89, recall 0.85,
+    "91.3% accuracy") were hardcoded and matched nothing that was measured.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return None
+
 
 class ModelAccuracyDemo:
     def __init__(self, model_path="app/model/best.pt", test_images_dir="app/uploads"):
@@ -137,20 +156,62 @@ class ModelAccuracyDemo:
         print("   • Confidence Threshold: 0.25")
 
         print("\nACCURACY INDICATORS:")
-        print("   • mAP@0.5 (Mean Average Precision): 0.87")
-        print("   • Precision: 0.89")
-        print("   • Recall: 0.85")
-        print("   • F1-Score: 0.87")
-        print("   • Detection Accuracy: 91.3%")
+        recorded = load_recorded_metrics()
+        if not recorded:
+            print("   Model has not been evaluated against a labelled split.")
+            print("   Run: python evaluate_model.py --data <path/to/data.yaml>")
+        else:
+            overall = recorded.get("overall", {})
+            print(f"   • mAP@0.5     : {overall.get('mAP50', 0):.4f}")
+            print(f"   • mAP@0.5:0.95: {overall.get('mAP50_95', 0):.4f}")
+            print(f"   • Precision   : {overall.get('precision', 0):.4f}")
+            print(f"   • Recall      : {overall.get('recall', 0):.4f}")
+            print(f"   (measured on the '{recorded.get('split')}' split, "
+                  f"{recorded.get('images')} images, "
+                  f"{str(recorded.get('evaluated_at', ''))[:10]})")
 
-        print("\nTRAINING PARAMETERS:")
-        print("   • Epochs: 100")
-        print("   • Batch Size: 16")
-        print("   • Optimizer: Adam")
-        print("   • Learning Rate: 0.001")
-        print("   • Dataset Size: 1,200+ images")
+            per_class = recorded.get("per_class", {})
+            if per_class:
+                print("\n   Per class (mAP@0.5 / precision / recall):")
+                for name, m in sorted(per_class.items(), key=lambda kv: -kv[1]["mAP50"]):
+                    print(f"     {name:<22} {m['mAP50']:.3f}  "
+                          f"{m['precision']:.3f}  {m['recall']:.3f}")
+                weak = sorted(n for n, m in per_class.items() if m["recall"] < 0.35)
+                if weak:
+                    print(f"\n   Low-recall classes (< 0.35): {', '.join(weak)}")
+
+        print("\nTRAINING PARAMETERS (read from the checkpoint):")
+        for label, value in self.read_training_args().items():
+            print(f"   • {label}: {value}")
 
         print("\n" + "="*60)
+
+    def read_training_args(self):
+        """Pull the real training configuration out of the .pt checkpoint.
+
+        These were previously asserted from memory (100 epochs, batch 16, Adam,
+        lr 0.001, "1,200+ images") and none of them matched the actual run.
+        """
+        try:
+            import torch
+            checkpoint = torch.load(self.model_path, map_location="cpu",
+                                    weights_only=False)
+        except Exception as exc:
+            return {"unavailable": f"could not read checkpoint ({exc})"}
+
+        args = checkpoint.get("train_args") or {}
+        if not args:
+            return {"unavailable": "checkpoint contains no train_args"}
+
+        return {
+            "Epochs": args.get("epochs", "unknown"),
+            "Batch Size": args.get("batch", "unknown"),
+            "Optimizer": args.get("optimizer", "unknown"),
+            "Initial LR": args.get("lr0", "unknown"),
+            "Image Size": args.get("imgsz", "unknown"),
+            "Fine-tuned From": args.get("model", "unknown"),
+            "Trained On": checkpoint.get("date", "unknown"),
+        }
 
     def show_sample_predictions(self, num_samples=3):
         """Display sample predictions with visualizations"""
@@ -201,6 +262,28 @@ class ModelAccuracyDemo:
         plt.tight_layout()
         plt.show()
 
+    def load_training_curve(self):
+        """Return (epochs, val mAP@0.5) from an Ultralytics results.csv, if present."""
+        candidates = [
+            os.path.join(os.path.dirname(self.model_path), "results.csv"),
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "results.csv"),
+        ]
+        for candidate in candidates:
+            if not os.path.exists(candidate):
+                continue
+            try:
+                with open(candidate, newline="", encoding="utf-8") as handle:
+                    rows = [{k.strip(): v for k, v in row.items()}
+                            for row in csv.DictReader(handle)]
+                if not rows:
+                    continue
+                key = next(k for k in rows[0] if "mAP50" in k and "95" not in k)
+                epochs = [float(r.get("epoch", i)) for i, r in enumerate(rows)]
+                return epochs, [float(r[key]) for r in rows]
+            except (OSError, ValueError, StopIteration, KeyError):
+                continue
+        return None
+
     def create_accuracy_summary_plot(self):
         """Create a summary plot of accuracy metrics"""
         if not hasattr(self, 'metrics'):
@@ -210,9 +293,19 @@ class ModelAccuracyDemo:
         # Create a figure with subplots
         fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 10))
 
-        # Metrics data
+        # Measured metrics only - refuse to plot placeholders.
+        recorded = load_recorded_metrics()
+        if not recorded:
+            print("No recorded metrics - run evaluate_model.py first.")
+            print("Refusing to plot placeholder values.")
+            plt.close(fig)
+            return
+
+        overall = recorded["overall"]
+        precision, recall = overall["precision"], overall["recall"]
+        f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
         metrics_names = ['Precision', 'Recall', 'F1-Score', 'mAP@0.5']
-        metrics_values = [0.89, 0.85, 0.87, 0.87]
+        metrics_values = [precision, recall, f1, overall["mAP50"]]
 
         # Bar chart for main metrics
         bars = ax1.bar(metrics_names, metrics_values, color=['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'])
@@ -226,34 +319,47 @@ class ModelAccuracyDemo:
             ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01,
                     f'{value:.2f}', ha='center', va='bottom', fontsize=10, weight='bold')
 
-        # Confusion matrix style plot (simplified)
-        classes = ['Caries', 'Missing Teeth', 'Bone Loss', 'Crown', 'Filling']
-        accuracy_scores = [0.92, 0.88, 0.85, 0.90, 0.86]
+        # Real per-class mAP@0.5, sorted so weak classes are unmissable.
+        per_class = recorded.get("per_class", {})
+        ordered = sorted(per_class.items(), key=lambda kv: kv[1]["mAP50"])
+        names = [n for n, _ in ordered]
 
-        ax2.barh(classes, accuracy_scores, color='#17becf')
-        ax2.set_title('Per-Class Detection Accuracy', fontsize=14, weight='bold')
-        ax2.set_xlabel('Accuracy', fontsize=12)
+        ax2.barh(names, [m["mAP50"] for _, m in ordered], color='#17becf')
+        ax2.set_title('Per-Class mAP@0.5 (measured)', fontsize=14, weight='bold')
+        ax2.set_xlabel('mAP@0.5', fontsize=12)
         ax2.set_xlim(0, 1)
         ax2.grid(axis='x', alpha=0.3)
 
-        # Training progress (simulated)
-        epochs = list(range(0, 101, 10))
-        train_loss = [0.8, 0.6, 0.45, 0.35, 0.28, 0.22, 0.18, 0.15, 0.12, 0.10, 0.08]
-        val_map = [0.1, 0.25, 0.45, 0.58, 0.68, 0.75, 0.80, 0.83, 0.85, 0.86, 0.87]
+        # Per-class recall - the axis that exposes missed pathology.
+        ax3.barh(names, [m["recall"] for _, m in ordered], color='#d62728')
+        ax3.set_title('Per-Class Recall (measured)', fontsize=14, weight='bold')
+        ax3.set_xlabel('Recall', fontsize=12)
+        ax3.set_xlim(0, 1)
+        ax3.grid(axis='x', alpha=0.3)
 
-        ax3.plot(epochs, train_loss, 'b-', label='Training Loss', linewidth=2)
-        ax3.set_title('Training Progress', fontsize=14, weight='bold')
-        ax3.set_xlabel('Epoch', fontsize=12)
-        ax3.set_ylabel('Loss', fontsize=12)
-        ax3.legend()
-        ax3.grid(alpha=0.3)
-
-        ax4.plot(epochs, val_map, 'r-', label='Validation mAP@0.5', linewidth=2)
-        ax4.set_title('Validation Performance', fontsize=14, weight='bold')
-        ax4.set_xlabel('Epoch', fontsize=12)
-        ax4.set_ylabel('mAP@0.5', fontsize=12)
-        ax4.legend()
-        ax4.grid(alpha=0.3)
+        # Training curve comes from the run's results.csv if it is available.
+        # The previous version plotted an invented loss curve and an invented
+        # validation-mAP curve rising to 0.87; neither was ever measured.
+        curve = self.load_training_curve()
+        if curve is None:
+            ax4.text(0.5, 0.5,
+                     "No training log found.\n\n"
+                     "Place the run's results.csv next to the model\n"
+                     "to plot the real training curve.",
+                     ha='center', va='center', fontsize=11, transform=ax4.transAxes)
+            ax4.set_xticks([])
+            ax4.set_yticks([])
+            ax4.set_title('Training Progress', fontsize=14, weight='bold')
+        else:
+            curve_epochs, curve_values = curve
+            ax4.plot(curve_epochs, curve_values, 'r-',
+                     label='Validation mAP@0.5', linewidth=2)
+            ax4.set_title('Validation Performance (from results.csv)',
+                          fontsize=14, weight='bold')
+            ax4.set_xlabel('Epoch', fontsize=12)
+            ax4.set_ylabel('mAP@0.5', fontsize=12)
+            ax4.legend()
+            ax4.grid(alpha=0.3)
 
         plt.suptitle('YOLO Dental Detection Model - Performance Analysis',
                     fontsize=16, weight='bold', y=0.98)

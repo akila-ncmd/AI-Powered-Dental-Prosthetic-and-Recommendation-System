@@ -1,0 +1,66 @@
+{
+  "evaluated_at": "2026-08-25T06:29:31+00:00",
+  "model_file": "best.pt",
+  "model_sha256_prefix": "201a9933735b",
+  "dataset": "dental-x-ray-panoramic-3",
+  "split": "test",
+  "images": 1501,
+  "overall": {
+    "mAP50": 0.581,
+    "mAP50_95": 0.2978,
+    "precision": 0.6289,
+    "recall": 0.5843
+  },
+  "per_class": {
+    "Bone Loss": {
+      "mAP50": 0.1557,
+      "precision": 0.3899,
+      "recall": 0.0345
+    },
+    "Caries": {
+      "mAP50": 0.3227,
+      "precision": 0.571,
+      "recall": 0.2482
+    },
+    "Crown": {
+      "mAP50": 0.873,
+      "precision": 0.7445,
+      "recall": 0.945
+    },
+    "Filling": {
+      "mAP50": 0.6643,
+      "precision": 0.6901,
+      "recall": 0.5975
+    },
+    "Implant": {
+      "mAP50": 0.9508,
+      "precision": 0.869,
+      "recall": 0.9717
+    },
+    "Missing teeth": {
+      "mAP50": 0.4755,
+      "precision": 0.5256,
+      "recall": 0.5689
+    },
+    "Periapical lesion": {
+      "mAP50": 0.1588,
+      "precision": 0.4736,
+      "recall": 0.1289
+    },
+    "Root Canal Treatment": {
+      "mAP50": 0.5901,
+      "precision": 0.6013,
+      "recall": 0.62
+    },
+    "Root Piece": {
+      "mAP50": 0.6904,
+      "precision": 0.6047,
+      "recall": 0.766
+    },
+    "impacted tooth": {
+      "mAP50": 0.9292,
+      "precision": 0.8193,
+      "recall": 0.9619
+    }
+  }
+}

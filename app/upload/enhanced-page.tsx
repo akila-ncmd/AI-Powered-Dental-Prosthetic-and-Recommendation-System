@@ -275,9 +275,17 @@ export default function EnhancedUploadPage() {
                                             )}
                                         </ul>
                                     </div>
-                                    <div className="p-3 bg-slate-50 rounded border border-slate-200 mt-4">
-                                        <div className="text-xs text-slate-500 font-medium tracking-wide">CONFIDENCE ASSESSMENT:</div>
-                                        <div className="text-sm text-slate-800 font-semibold mt-1">High Diagnostic Probability</div>
+                                    {/* This panel previously read "High Diagnostic Probability"
+                                        as a fixed string on every result, regardless of what the
+                                        model returned. Detector recall varies widely by class, so
+                                        state the limitation instead of asserting confidence. */}
+                                    <div className="p-3 bg-amber-50 rounded border border-amber-200 mt-4">
+                                        <div className="text-xs text-amber-700 font-medium tracking-wide">DECISION SUPPORT ONLY</div>
+                                        <div className="text-xs text-amber-900 mt-1 leading-relaxed">
+                                            Detections are indicative and vary in reliability by condition.
+                                            A clinician must confirm all findings; absence of a detection
+                                            does not exclude pathology.
+                                        </div>
                                     </div>
                                 </div>
                                 <div className="mt-6">

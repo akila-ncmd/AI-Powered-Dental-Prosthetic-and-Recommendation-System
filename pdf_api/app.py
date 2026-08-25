@@ -5,6 +5,8 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.units import cm
 from reportlab.lib.utils import ImageReader
 import io
+import json
+import os
 import re
 import requests
 import time
@@ -28,6 +30,25 @@ app = Flask(__name__)
 
 # Allow all origins (or restrict to your Next.js origin if you prefer)
 CORS(app, resources={r"/*": {"origins": "*"}})
+
+# Metrics are read from the file DentalAI-Backend/evaluate_model.py writes.
+# They are never hardcoded here: this report previously printed "Model
+# Accuracy: 91.3%", "mAP@0.5: 0.87", "Precision: 0.89" and "Recall: 0.85",
+# none of which were measured and none of which matched the model.
+MODEL_METRICS_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "DentalAI-Backend", "model_metrics.json",
+)
+
+
+def load_model_metrics(path=MODEL_METRICS_PATH):
+    """Return the recorded metrics, or None if the model has not been evaluated."""
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return None
+
 
 def server_error(context, exc, status=500):
     """Log full detail server-side; return an opaque error to the client.
@@ -257,15 +278,33 @@ def test_pdf():
             c.setFillColor(black)
             c.setFont("Helvetica", 12)
 
-            # Simple test - just add one line
-            c.drawString(4*cm, y, "Model Accuracy: 91.3%")
-            print(f"DEBUG: Drew first line, y={y}")
-            y -= 0.5*cm
-            c.drawString(4*cm, y, "mAP@0.5: 0.87")
-            y -= 0.5*cm
-            c.drawString(4*cm, y, "Precision: 0.89")
-            y -= 0.5*cm
-            c.drawString(4*cm, y, "Recall: 0.85")
+            metrics = load_model_metrics()
+            if not metrics:
+                c.drawString(4*cm, y, "Model has not been evaluated.")
+                y -= 0.5*cm
+                c.setFont("Helvetica-Oblique", 10)
+                c.drawString(4*cm, y, "Run: python DentalAI-Backend/evaluate_model.py --data <data.yaml>")
+                y -= 0.5*cm
+            else:
+                overall = metrics.get("overall", {})
+                c.drawString(4*cm, y, f"mAP@0.5: {overall.get('mAP50', 0):.3f}")
+                y -= 0.5*cm
+                c.drawString(4*cm, y, f"mAP@0.5:0.95: {overall.get('mAP50_95', 0):.3f}")
+                y -= 0.5*cm
+                c.drawString(4*cm, y, f"Precision: {overall.get('precision', 0):.3f}")
+                y -= 0.5*cm
+                c.drawString(4*cm, y, f"Recall: {overall.get('recall', 0):.3f}")
+                y -= 0.7*cm
+
+                # Provenance: a metric with no stated source is not a metric.
+                c.setFont("Helvetica-Oblique", 9)
+                c.drawString(4*cm, y, f"Measured on the '{metrics.get('split', '?')}' split of "
+                                      f"{metrics.get('dataset', 'the dataset')} "
+                                      f"({metrics.get('images', '?')} images), "
+                                      f"{str(metrics.get('evaluated_at', ''))[:10]}.")
+                y -= 0.5*cm
+                c.drawString(4*cm, y, "Per-class performance varies substantially; see model_metrics.json.")
+                y -= 0.5*cm
             print("DEBUG: Completed AI Model Performance Metrics section")
         except Exception as e:
             print(f"ERROR in AI Model Performance Metrics section: {e}")
