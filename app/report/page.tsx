@@ -75,27 +75,59 @@ export default function ReportPage() {
           const patient = await patientResponse.json()
           setPatientData(patient)
 
-          // Load detected conditions from localStorage (set during upload)
-          const storedConditions = localStorage.getItem("detectedConditions")
-          if (storedConditions) {
-            const conditions = JSON.parse(storedConditions)
-            console.log("DEBUG: Loaded detected conditions from localStorage:", conditions)
-            setDetectedConditions(conditions)
-          } else {
-            console.log("DEBUG: No detected conditions found in localStorage")
-            setDetectedConditions([])
+          // Detected conditions: the database first. localStorage only holds
+          // this browser's last analysis, so it is empty after a reload in a
+          // different browser and for any second clinician opening the case.
+          let conditions: string[] = []
+          try {
+            const conditionsResponse = await fetch(`/api/patients/${patientId}/conditions`)
+            if (conditionsResponse.ok) {
+              const rows = await conditionsResponse.json()
+              if (Array.isArray(rows)) {
+                // One row per detection box, so de-duplicate for display.
+                conditions = Array.from(
+                  new Set(rows.map((row: any) => row?.condition_type).filter(Boolean))
+                )
+              }
+            }
+          } catch (conditionsError) {
+            console.warn("Could not load stored conditions:", conditionsError)
           }
 
-          // Load uploaded and annotated images from localStorage
-          const storedUploadedImage = localStorage.getItem("uploadedImage")
-          if (storedUploadedImage) {
-            setUploadedImage(storedUploadedImage)
+          if (conditions.length === 0) {
+            const storedConditions = localStorage.getItem("detectedConditions")
+            if (storedConditions) {
+              try {
+                const parsed = JSON.parse(storedConditions)
+                if (Array.isArray(parsed)) conditions = parsed
+              } catch {
+                // Ignore a corrupted cache; the database is the source of truth.
+              }
+            }
+          }
+          setDetectedConditions(conditions)
+
+          // Images: same order of preference. The database returns relative
+          // URLs that survive a reload; the localStorage original is a blob:
+          // URL that is only valid inside the session that created it.
+          let annotated: string | null = null
+          let original: string | null = null
+          try {
+            const imageResponse = await fetch(`/api/patients/${patientId}/latest-image`)
+            if (imageResponse.ok) {
+              const imageData = await imageResponse.json()
+              annotated = imageData?.image_url || null
+              original = imageData?.original_image_url || null
+            }
+          } catch (imageError) {
+            console.warn("Could not load stored images:", imageError)
           }
 
-          const storedAnnotatedImage = localStorage.getItem("annotatedImage")
-          if (storedAnnotatedImage) {
-            setAnnotatedImage(storedAnnotatedImage)
-          }
+          if (!annotated) annotated = localStorage.getItem("annotatedImage")
+          if (!original) original = localStorage.getItem("uploadedImage")
+
+          if (original) setUploadedImage(original)
+          if (annotated) setAnnotatedImage(annotated)
 
           // Fetch recommendations
           const recommendationsResponse = await fetch(`/api/recommendations/${patientId}`)

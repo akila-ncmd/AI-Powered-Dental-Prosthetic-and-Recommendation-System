@@ -155,10 +155,46 @@ class PatientCreate(BaseModel):
     family_dental_history: Optional[str] = Field(None, max_length=500, description="Family dental history")
 
 
+# Analysis Model
+class Analysis(BaseModel):
+    """One completed run of the model against one radiograph.
+
+    Every run is kept, so a patient accumulates a history rather than having
+    the previous findings overwritten. Reads that want "the patient's current
+    findings" resolve the most recent Analysis and filter on its id; without
+    this document a run that detected nothing would be indistinguishable from
+    no run at all, and the previous run's findings would surface as current.
+    """
+    id: Optional[PyObjectId] = Field(default_factory=PyObjectId, alias="_id")
+    patient_id: PyObjectId = Field(..., description="Reference to the patient")
+    analysis_key: str = Field(..., max_length=255, description="Identifies the /predict run this came from")
+    source_filename: Optional[str] = Field(None, max_length=255, description="Original radiograph on disk")
+    annotated_filename: Optional[str] = Field(None, max_length=255, description="Annotated output on disk")
+    detected_conditions: List[DetectedConditionType] = Field(default_factory=list, description="Distinct findings")
+    condition_count: int = Field(0, ge=0, description="Number of detection boxes stored")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    class Config:
+        allow_population_by_field_name = True
+        arbitrary_types_allowed = True
+        json_encoders = {ObjectId: str}
+        schema_extra = {
+            "example": {
+                "patient_id": "507f1f77bcf86cd799439011",
+                "analysis_key": "xray_9f3c1b2a4d5e.jpg",
+                "source_filename": "xray_9f3c1b2a4d5e.jpg",
+                "annotated_filename": "xray_9f3c1b2a4d5e.jpg",
+                "detected_conditions": ["Missing Teeth", "Caries"],
+                "condition_count": 4
+            }
+        }
+
+
 # Detected Condition Model
 class DetectedCondition(BaseModel):
     id: Optional[PyObjectId] = Field(default_factory=PyObjectId, alias="_id")
     patient_id: PyObjectId = Field(..., description="Reference to the patient")
+    analysis_id: Optional[PyObjectId] = Field(None, description="The Analysis run this detection belongs to")
     condition_type: DetectedConditionType = Field(..., description="Type of detected condition")
     confidence_score: Optional[float] = Field(None, ge=0.0, le=1.0, description="AI confidence score")
     bounding_box: Optional[Dict[str, Any]] = Field(None, description="Bounding box coordinates from AI detection")
@@ -225,6 +261,7 @@ class Recommendation(BaseModel):
 class Image(BaseModel):
     id: Optional[PyObjectId] = Field(default_factory=PyObjectId, alias="_id")
     patient_id: PyObjectId = Field(..., description="Reference to the patient")
+    analysis_id: Optional[PyObjectId] = Field(None, description="The Analysis run this image belongs to")
     image_type: ImageType = Field(..., description="Type of image (original or annotated)")
     filename: str = Field(..., max_length=255, description="Image filename")
     file_path: str = Field(..., max_length=500, description="File path on server")
@@ -260,8 +297,14 @@ MONGODB_INDEXES = {
         {"keys": [("nic", 1)], "unique": True, "name": "unique_nic"},
         {"keys": [("created_at", -1)], "name": "created_at_desc"},
     ],
+    "analyses": [
+        # The reads resolve "the latest analysis" with this compound sort.
+        {"keys": [("patient_id", 1), ("created_at", -1)], "name": "patient_id_created_at_desc"},
+        {"keys": [("patient_id", 1), ("analysis_key", 1)], "unique": True, "name": "unique_patient_analysis_key"},
+    ],
     "detected_conditions": [
         {"keys": [("patient_id", 1)], "name": "patient_id_index"},
+        {"keys": [("analysis_id", 1)], "name": "analysis_id_index"},
         {"keys": [("detected_at", -1)], "name": "detected_at_desc"},
         {"keys": [("condition_type", 1)], "name": "condition_type_index"},
     ],
@@ -273,6 +316,7 @@ MONGODB_INDEXES = {
     ],
     "images": [
         {"keys": [("patient_id", 1)], "name": "patient_id_index"},
+        {"keys": [("analysis_id", 1)], "name": "analysis_id_index"},
         {"keys": [("image_type", 1)], "name": "image_type_index"},
         {"keys": [("uploaded_at", -1)], "name": "uploaded_at_desc"},
     ],

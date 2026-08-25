@@ -6,11 +6,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from ultralytics import YOLO
 from app.database import Database
-from app.models import Patient, DetectedCondition, Recommendation, Image, DetectedConditionType
+from app.models import Patient, Analysis, DetectedCondition, Recommendation, Image, DetectedConditionType
 from app.recommendation_engine import recommendation_engine
 from bson import ObjectId
-from typing import List
+from typing import Any, Dict, List, Optional
 from pydantic import ValidationError
+import mimetypes
 import os
 import re
 import shutil
@@ -50,6 +51,126 @@ def sanitize_upload_filename(filename: str) -> str:
     stem = re.sub(r"[^A-Za-z0-9._-]", "_", stem).strip("._") or "upload"
     ext = ext.lower() if ext.lower() in SAFE_IMAGE_SUFFIXES else ".png"
     return f"{stem[:80]}{ext}"
+
+
+def resolve_stored_file(url_or_name: Optional[str], folder: str) -> Optional[str]:
+    """Map a client-supplied URL back onto a file this server already wrote.
+
+    The caller only ever echoes back a name /predict produced, so the exact
+    filename is preserved rather than recomputed - the annotated name carries
+    a run id that keeps two patients' uploads apart. Everything else about the
+    value is treated as hostile: the query string is dropped, the path is
+    reduced to a basename, and the resolved path must still sit inside
+    ``folder`` before the file is accepted.
+    """
+    if not url_or_name:
+        return None
+
+    candidate = str(url_or_name).split("?", 1)[0].split("#", 1)[0]
+    candidate = os.path.basename(candidate.replace("\\", "/").rstrip("/"))
+    if not candidate or candidate in {".", ".."}:
+        return None
+
+    root = os.path.realpath(folder)
+    full = os.path.realpath(os.path.join(root, candidate))
+    try:
+        if os.path.commonpath([root, full]) != root:
+            return None
+    except ValueError:
+        # Different drives on Windows - definitively outside the folder.
+        return None
+
+    return candidate if os.path.isfile(full) else None
+
+
+# Every label a DetectedCondition may carry. Anything outside this set is
+# skipped rather than written, so one unrecognised class cannot fail the
+# whole insert.
+VALID_CONDITION_TYPES = {member.value for member in DetectedConditionType}
+
+
+def normalise_condition_label(label: Any) -> Optional[str]:
+    """Map a raw YOLO class label onto a DetectedConditionType value.
+
+    The trained model emits "Missing teeth", "Periapical lesion" and
+    "impacted tooth"; the enum is title-cased. Writing the raw label into a
+    DetectedCondition fails Pydantic validation - this was a production bug -
+    so every write goes through the knowledge base's own alias table first.
+    """
+    if not isinstance(label, str) or not label.strip():
+        return None
+    canonical = recommendation_engine.canonical_condition(label)
+    return canonical if canonical in VALID_CONDITION_TYPES else None
+
+
+def _sequence_to_list(value: Any) -> list:
+    """Best-effort conversion of a torch tensor / ndarray / sequence to a list."""
+    if value is None:
+        return []
+    try:
+        return list(value)
+    except TypeError:
+        return []
+
+
+def _as_confidence(value: Any) -> Optional[float]:
+    """Coerce a confidence to the 0.0-1.0 range DetectedCondition validates."""
+    if value is None:
+        return None
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, min(1.0, confidence))
+
+
+def _as_bounding_box(value: Any) -> Optional[Dict[str, float]]:
+    """Normalise xyxy coordinates - tensor row, list or dict - to a plain dict."""
+    if value is None:
+        return None
+
+    if isinstance(value, dict):
+        try:
+            return {key: float(value[key]) for key in ("x1", "y1", "x2", "y2")}
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    try:
+        coords = [float(coord) for coord in _sequence_to_list(value)[:4]]
+    except (TypeError, ValueError):
+        return None
+    if len(coords) != 4:
+        return None
+    return {"x1": coords[0], "y1": coords[1], "x2": coords[2], "y2": coords[3]}
+
+
+def _dedupe(values) -> list:
+    """Unique values, first-seen order preserved."""
+    return list(dict.fromkeys(values))
+
+
+async def get_latest_analysis(db, patient_oid) -> Optional[dict]:
+    """The most recent analysis run attached to this patient, if any."""
+    return await db.analyses.find_one(
+        {"patient_id": patient_oid},
+        # created_at first; _id breaks ties for two runs in the same instant.
+        sort=[("created_at", -1), ("_id", -1)],
+    )
+
+
+def scoped_to_analysis(patient_oid, analysis: Optional[dict]) -> Dict[str, Any]:
+    """Query restricting detections or images to one analysis run.
+
+    Every run is retained, so an unscoped query would mix findings from a
+    radiograph that has since been superseded into the patient's current
+    results. Documents written before analyses were tracked carry no
+    analysis_id, so a patient with no Analysis document falls back to
+    everything on file for them rather than to nothing at all.
+    """
+    query: Dict[str, Any] = {"patient_id": patient_oid}
+    if analysis is not None:
+        query["analysis_id"] = analysis["_id"]
+    return query
 
 # --------------------------
 # Load YOLO model
@@ -293,6 +414,7 @@ async def predict(request: Request, file: UploadFile = File(...)):
         )
 
         detected_classes = set()
+        detections = []
         annotated_image_path = os.path.join(prediction_dir, output_filename)
         annotated_saved = False
 
@@ -300,11 +422,25 @@ async def predict(request: Request, file: UploadFile = File(...)):
             logging.warning("No results returned from model")
 
         for r in results:
-            # 1. Extract class names for response
+            # 1. Extract class names for response, and the per-box confidence
+            # and coordinates a DetectedCondition needs. The class-name set is
+            # built exactly as before so detected_conditions keeps its shape.
             if hasattr(r, 'names') and r.boxes is not None:
-                for idx, cls_id in enumerate(r.boxes.cls):
+                class_ids = _sequence_to_list(getattr(r.boxes, "cls", None))
+                confidences = _sequence_to_list(getattr(r.boxes, "conf", None))
+                boxes_xyxy = _sequence_to_list(getattr(r.boxes, "xyxy", None))
+
+                for idx, cls_id in enumerate(class_ids):
                     cls_name = r.names[int(cls_id)]
                     detected_classes.add(cls_name)
+                    detections.append({
+                        "label": cls_name,
+                        # Canonical spelling so the attach step can store this
+                        # without tripping over the model's label casing.
+                        "condition_type": normalise_condition_label(cls_name) or cls_name,
+                        "confidence": _as_confidence(confidences[idx]) if idx < len(confidences) else None,
+                        "bounding_box": _as_bounding_box(boxes_xyxy[idx]) if idx < len(boxes_xyxy) else None,
+                    })
             
             # 2. Plot the result. line_width/font_size are deliberately left
             # to Ultralytics' automatic scaling: the previous hardcoded
@@ -337,7 +473,11 @@ async def predict(request: Request, file: UploadFile = File(...)):
         return JSONResponse({
             "message": "Prediction successful",
             "detected_conditions": list(detected_classes),
-            "output_image": annotated_url
+            "output_image": annotated_url,
+            # Added so the analysis can be persisted once a patient exists.
+            # The three keys above are unchanged for the current frontend.
+            "detections": detections,
+            "input_image": f"/api/uploads/{os.path.basename(input_path)}",
         })
 
     except FileNotFoundError as e:
@@ -366,16 +506,67 @@ async def get_patient_conditions(patient_id: str, db=Depends(get_database)):
     if not ObjectId.is_valid(patient_id):
         raise HTTPException(status_code=400, detail="Invalid patient ID")
 
+    patient_oid = ObjectId(patient_id)
+
+    # Only the current radiograph's findings. Earlier runs are still on file
+    # and are reachable through GET /patients/{id}/analyses.
+    analysis = await get_latest_analysis(db, patient_oid)
+
     conditions_list = []
-    async for condition in db.detected_conditions.find({"patient_id": ObjectId(patient_id)}):
+    async for condition in db.detected_conditions.find(scoped_to_analysis(patient_oid, analysis)):
         conditions_list.append({
             "id": str(condition["_id"]),
             "condition_type": condition["condition_type"],
             "confidence_score": condition.get("confidence_score"),
             "bounding_box": condition.get("bounding_box"),
-            "detected_at": condition.get("detected_at")
+            "detected_at": condition.get("detected_at"),
+            "analysis_id": str(condition["analysis_id"]) if condition.get("analysis_id") else None,
         })
     return conditions_list
+
+
+@app.get("/patients/{patient_id}/analyses")
+async def get_patient_analyses(patient_id: str, db=Depends(get_database)):
+    """Every analysis run on file for a patient, newest first.
+
+    The scoped reads deliberately show only the current radiograph; this is
+    where the retained history is readable.
+    """
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    if not patient_id or patient_id == "undefined":
+        raise HTTPException(status_code=400, detail="Invalid patient ID")
+
+    if not ObjectId.is_valid(patient_id):
+        raise HTTPException(status_code=400, detail="Invalid patient ID")
+
+    analyses = []
+    cursor = db.analyses.find({"patient_id": ObjectId(patient_id)}).sort([("created_at", -1), ("_id", -1)])
+    async for analysis in cursor:
+        analyses.append({
+            "id": str(analysis["_id"]),
+            "analysis_key": analysis.get("analysis_key"),
+            "detected_conditions": analysis.get("detected_conditions", []),
+            "condition_count": analysis.get("condition_count", 0),
+            "annotated_image_url": (
+                f"/api/outputs/predictions/{analysis['annotated_filename']}"
+                if analysis.get("annotated_filename") else None
+            ),
+            "original_image_url": (
+                f"/api/uploads/{analysis['source_filename']}"
+                if analysis.get("source_filename") else None
+            ),
+            "created_at": analysis.get("created_at"),
+        })
+
+    return {
+        "patient_id": patient_id,
+        "analyses": analyses,
+        "count": len(analyses),
+        # The first entry is the one every other read is scoped to.
+        "latest_analysis_id": analyses[0]["id"] if analyses else None,
+    }
 
 @app.get("/patients/{patient_id}/latest-image")
 async def get_patient_latest_image(patient_id: str, db=Depends(get_database)):
@@ -389,22 +580,311 @@ async def get_patient_latest_image(patient_id: str, db=Depends(get_database)):
     if not ObjectId.is_valid(patient_id):
         raise HTTPException(status_code=400, detail="Invalid patient ID")
 
-    # Get the latest annotated image
+    patient_oid = ObjectId(patient_id)
+
+    # Get the latest annotated image, and the original it was produced from,
+    # so the report can render the before/after pair straight from the
+    # database instead of a blob: URL that dies on reload. Both are scoped to
+    # the same analysis: taking the newest of each independently could pair
+    # one run's original with another run's annotation.
+    analysis = await get_latest_analysis(db, patient_oid)
+    scope = scoped_to_analysis(patient_oid, analysis)
+
     latest_image = await db.images.find_one(
-        {"patient_id": ObjectId(patient_id), "image_type": "annotated"},
+        {**scope, "image_type": "annotated"},
+        sort=[("uploaded_at", -1)]
+    )
+    latest_original = await db.images.find_one(
+        {**scope, "image_type": "original"},
         sort=[("uploaded_at", -1)]
     )
 
-    if not latest_image:
-        return {"image_url": None, "detected_conditions": []}
+    # Relative URLs only: an absolute http://127.0.0.1:8000/... is unreachable
+    # from any browser that is not on this machine.
+    original_url = f"/api/uploads/{latest_original['filename']}" if latest_original else None
 
-    # Use relative URL for frontend proxy compatibility
+    if not latest_image:
+        return {
+            "image_url": None,
+            "detected_conditions": [],
+            "original_image_url": original_url,
+        }
+
     image_url = f"/api/outputs/predictions/{latest_image['filename']}"
-    detected_conditions = latest_image.get("annotations", {}).get("detected_conditions", [])
+    detected_conditions = (latest_image.get("annotations") or {}).get("detected_conditions", [])
 
     return {
         "image_url": image_url,
-        "detected_conditions": detected_conditions
+        "detected_conditions": detected_conditions,
+        "original_image_url": original_url,
+    }
+
+
+# ------------------
+# Analysis attachment
+# ------------------
+
+async def _persist_image_document(db, patient_oid, analysis_id, filename, folder, image_type, annotations=None):
+    """Insert or refresh the Image document describing a file on disk.
+
+    Dimensions, size and MIME type are read from the file here rather than
+    taken from the request: the client only supplies a filename, so none of
+    the stored metadata depends on it being honest.
+    """
+    file_path = os.path.join(folder, filename)
+
+    img = cv2.imread(file_path)
+    height, width = img.shape[:2] if img is not None else (None, None)
+
+    # Validate through the model so a malformed document can never reach the
+    # collection, then write the plain BSON types the readers expect.
+    image = Image(
+        patient_id=patient_oid,
+        analysis_id=analysis_id,
+        image_type=image_type,
+        filename=filename,
+        file_path=file_path,
+        file_size=os.path.getsize(file_path),
+        mime_type=mimetypes.guess_type(filename)[0] or "image/jpeg",
+        width=width,
+        height=height,
+        annotations=annotations,
+    )
+
+    document = {
+        "patient_id": image.patient_id,
+        "analysis_id": image.analysis_id,
+        "image_type": image.image_type.value,
+        "filename": image.filename,
+        "file_path": image.file_path,
+        "file_size": image.file_size,
+        "mime_type": image.mime_type,
+        "width": image.width,
+        "height": image.height,
+        "uploaded_at": image.uploaded_at,
+        "annotations": image.annotations,
+    }
+
+    # One original and one annotated per run. Re-attaching the same analysis
+    # updates that run's rows in place instead of adding to them; a genuinely
+    # new run has a new analysis_id and so gets its own pair.
+    await db.images.update_one(
+        {
+            "patient_id": patient_oid,
+            "analysis_id": analysis_id,
+            "image_type": document["image_type"],
+        },
+        {"$set": document},
+        upsert=True,
+    )
+    return document
+
+
+@app.post("/patients/{patient_id}/analysis")
+async def attach_analysis_to_patient(patient_id: str, payload: dict, db=Depends(get_database)):
+    """Bind an already-completed /predict run to a patient record.
+
+    /predict runs before the patient exists - the UI collects the radiograph
+    on /upload and creates the record on /patient-data - so it cannot know
+    which patient the image belongs to. This endpoint is the join: the
+    frontend calls it as soon as POST /patients returns an id, echoing back
+    the filenames and detections /predict produced. Without it nothing is ever
+    written to db.detected_conditions or db.images and every read of those two
+    collections comes back empty.
+    """
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    if not patient_id or patient_id == "undefined":
+        raise HTTPException(status_code=400, detail="Invalid patient ID")
+
+    if not ObjectId.is_valid(patient_id):
+        raise HTTPException(status_code=400, detail="Invalid patient ID")
+
+    raw_detections = payload.get("detections")
+    if raw_detections is not None and not isinstance(raw_detections, list):
+        raise HTTPException(status_code=400, detail="detections must be a list")
+    raw_detections = raw_detections or []
+
+    raw_labels = payload.get("detected_conditions") or []
+    if not isinstance(raw_labels, list):
+        raise HTTPException(status_code=400, detail="detected_conditions must be a list")
+
+    # A client that only has the legacy string list still gets its findings
+    # stored, just without confidence or coordinates.
+    if not raw_detections:
+        raw_detections = [{"condition_type": label} for label in raw_labels if isinstance(label, str)]
+
+    output_image = payload.get("output_image")
+    input_image = payload.get("input_image")
+
+    if not raw_detections and not output_image and not input_image:
+        # Refuse an empty body outright rather than silently wiping whatever
+        # analysis is already on file for this patient.
+        raise HTTPException(status_code=400, detail="No analysis data supplied")
+
+    patient_oid = ObjectId(patient_id)
+    patient = await db.patients.find_one({"_id": patient_oid})
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    annotated_filename = resolve_stored_file(output_image, PREDICTION_FOLDER)
+    original_filename = resolve_stored_file(input_image, UPLOAD_FOLDER)
+
+    if output_image and not annotated_filename:
+        logging.warning(f"Annotated image {output_image!r} not usable for patient {patient_id}")
+    if input_image and not original_filename:
+        logging.warning(f"Original image {input_image!r} not usable for patient {patient_id}")
+
+    # The run's identity. /predict stamps a unique 12-hex id into the name it
+    # writes, so the filename already distinguishes one run from another -
+    # which makes a repeated attach of the SAME run (a retried request, say)
+    # update that run rather than fork a duplicate. With no usable filename
+    # there is nothing to recognise the run by, so it can only be a new one.
+    analysis_key = annotated_filename or original_filename or f"detections-only-{uuid.uuid4().hex}"
+
+    existing_analysis = await db.analyses.find_one({
+        "patient_id": patient_oid,
+        "analysis_key": analysis_key,
+    })
+    analysis_id = existing_analysis["_id"] if existing_analysis else ObjectId()
+
+    condition_documents = []
+    stored_condition_types = []
+    skipped_labels = []
+
+    for detection in raw_detections:
+        if not isinstance(detection, dict):
+            continue
+
+        raw_label = detection.get("condition_type") or detection.get("label")
+        condition_type = normalise_condition_label(raw_label)
+        if condition_type is None:
+            skipped_labels.append(raw_label)
+            continue
+
+        confidence = detection.get("confidence")
+        if confidence is None:
+            confidence = detection.get("confidence_score")
+
+        try:
+            condition = DetectedCondition(
+                patient_id=patient_oid,
+                analysis_id=analysis_id,
+                condition_type=condition_type,
+                confidence_score=_as_confidence(confidence),
+                bounding_box=_as_bounding_box(detection.get("bounding_box")),
+            )
+        except ValidationError as exc:
+            logging.warning(f"Skipping invalid detection for patient {patient_id}: {exc}")
+            skipped_labels.append(raw_label)
+            continue
+
+        condition_documents.append({
+            "_id": ObjectId(),
+            # ObjectId, because every existing reader of this collection -
+            # main.py and pdf_api alike - queries it with ObjectId(patient_id).
+            "patient_id": condition.patient_id,
+            "analysis_id": condition.analysis_id,
+            "condition_type": condition.condition_type.value,
+            "confidence_score": condition.confidence_score,
+            "bounding_box": condition.bounding_box,
+            "description": condition.description,
+            "detected_at": condition.detected_at,
+        })
+        stored_condition_types.append(condition.condition_type.value)
+
+    if skipped_labels:
+        logging.warning(
+            f"Ignored {len(skipped_labels)} unrecognised condition label(s) "
+            f"for patient {patient_id}: {skipped_labels}"
+        )
+
+    # Scoped to this run only: earlier analyses stay on file, so the patient
+    # keeps a full history of what the model reported and when. The delete is
+    # what makes a repeated attach of the same run idempotent rather than
+    # doubling its detections.
+    await db.detected_conditions.delete_many({
+        "patient_id": patient_oid,
+        "analysis_id": analysis_id,
+    })
+    if condition_documents:
+        await db.detected_conditions.insert_many(condition_documents)
+
+    unique_conditions = _dedupe(stored_condition_types)
+
+    # The Analysis document is what the scoped reads resolve. It has to exist
+    # even for a run that detected nothing: without it, a clean radiograph
+    # would fall through to the previous run and report findings the model did
+    # not make this time.
+    analysis = Analysis(
+        patient_id=patient_oid,
+        analysis_key=analysis_key,
+        source_filename=original_filename,
+        annotated_filename=annotated_filename,
+        detected_conditions=unique_conditions,
+        condition_count=len(condition_documents),
+    )
+    await db.analyses.update_one(
+        {"patient_id": patient_oid, "analysis_key": analysis_key},
+        {
+            "$set": {
+                "patient_id": analysis.patient_id,
+                "analysis_key": analysis.analysis_key,
+                "source_filename": analysis.source_filename,
+                "annotated_filename": analysis.annotated_filename,
+                "detected_conditions": [c.value for c in analysis.detected_conditions],
+                "condition_count": analysis.condition_count,
+            },
+            # Re-attaching must not reorder history by refreshing created_at.
+            "$setOnInsert": {"_id": analysis_id, "created_at": analysis.created_at},
+        },
+        upsert=True,
+    )
+
+    annotated_url = None
+    original_url = None
+
+    if original_filename:
+        await _persist_image_document(
+            db, patient_oid, analysis_id, original_filename, UPLOAD_FOLDER, "original"
+        )
+        original_url = f"/api/uploads/{original_filename}"
+
+    if annotated_filename:
+        await _persist_image_document(
+            db, patient_oid, analysis_id, annotated_filename, PREDICTION_FOLDER, "annotated",
+            annotations={
+                "detected_conditions": unique_conditions,
+                "detections": [
+                    {
+                        "condition_type": doc["condition_type"],
+                        "confidence_score": doc["confidence_score"],
+                        "bounding_box": doc["bounding_box"],
+                    }
+                    for doc in condition_documents
+                ],
+                "source_filename": original_filename,
+            },
+        )
+        annotated_url = f"/api/outputs/predictions/{annotated_filename}"
+
+    logging.info(
+        f"Attached analysis {analysis_id} to patient {patient_id}: "
+        f"{len(condition_documents)} condition(s), "
+        f"annotated={bool(annotated_url)}, original={bool(original_url)}, "
+        f"{'updated existing run' if existing_analysis else 'new run'}"
+    )
+
+    return {
+        "patient_id": patient_id,
+        "analysis_id": str(analysis_id),
+        "conditions_stored": len(condition_documents),
+        "detected_conditions": unique_conditions,
+        "annotated_image_url": annotated_url,
+        "original_image_url": original_url,
+        "skipped_labels": [label for label in skipped_labels if isinstance(label, str)],
+        "message": "Analysis attached to patient",
     }
 
 # ------------------
@@ -478,17 +958,45 @@ async def generate_ai_recommendations(
             if not detected_conditions:
                 # Fall back to previously stored detections only - never invent
                 # a condition the model did not actually report.
-                conditions_cursor = db.detected_conditions.find({"patient_id": ObjectId(patient_id)})
+                # Scoped to the current radiograph: an older run's findings
+                # must not drive a treatment plan for the image on file now.
+                latest_analysis = await get_latest_analysis(db, ObjectId(patient_id))
+                conditions_cursor = db.detected_conditions.find(
+                    scoped_to_analysis(ObjectId(patient_id), latest_analysis)
+                )
                 stored_conditions = []
                 async for condition in conditions_cursor:
                     stored_conditions.append(condition["condition_type"])
 
-                detected_conditions = stored_conditions
+                # One document is stored per detection box, so a radiograph
+                # with four caries yields four rows; the engine wants the
+                # distinct conditions, not their multiplicity.
+                detected_conditions = _dedupe(stored_conditions)
 
         if not detected_conditions:
             # No findings is a valid clinical result: return an empty plan
             # rather than a treatment for a fabricated diagnosis.
             logging.info(f"No detected conditions for patient {patient_id}; returning empty plan")
+
+            if db is not None:
+                # Retract the plan on file as well. This branch returns before
+                # the engine runs, so _store_recommendations - which is what
+                # normally replaces a patient's recommendations - never fires,
+                # and a plan generated from a radiograph that has since been
+                # superseded would keep being served by GET /recommendations.
+                # The report would then show a full treatment plan directly
+                # beneath "No abnormalities detected".
+                #
+                # patient_id stays a string here: recommendation_engine writes
+                # and queries this collection with the string, unlike
+                # detected_conditions and images which use ObjectId.
+                cleared = await db.recommendations.delete_many({"patient_id": patient_id})
+                if getattr(cleared, "deleted_count", 0):
+                    logging.info(
+                        f"Cleared {cleared.deleted_count} stale recommendation(s) "
+                        f"for patient {patient_id}: the current analysis found nothing"
+                    )
+
             return {
                 "patient_id": patient_id,
                 "detected_conditions": [],

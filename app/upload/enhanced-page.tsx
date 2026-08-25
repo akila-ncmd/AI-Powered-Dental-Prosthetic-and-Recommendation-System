@@ -115,6 +115,20 @@ export default function EnhancedUploadPage() {
             if (data.detected_conditions && Array.isArray(data.detected_conditions)) {
                 localStorage.setItem("detectedConditions", JSON.stringify(data.detected_conditions))
             }
+
+            // /predict is anonymous: no patient exists yet at this point in the
+            // journey, so the analysis is parked here and /patient-data attaches
+            // it to the database the moment a patient id comes back. Until that
+            // happens localStorage is the only copy that exists.
+            localStorage.setItem(
+                "pendingAnalysis",
+                JSON.stringify({
+                    detections: Array.isArray(data.detections) ? data.detections : [],
+                    detected_conditions: Array.isArray(data.detected_conditions) ? data.detected_conditions : [],
+                    output_image: data.output_image || "",
+                    input_image: data.input_image || "",
+                })
+            )
         } catch (err) {
             const error = err as Error
             alert(`Analysis failed: ${error.message}`)

@@ -1,5 +1,38 @@
+import os
+
 import pytest
 from unittest.mock import MagicMock
+
+
+@pytest.fixture(autouse=True)
+def sweep_generated_radiographs():
+    """Delete the images a test makes the API write to disk.
+
+    POST /predict and POST /images/upload each write a real file under
+    DentalAI-Backend/app, so a suite that never sweeps up grows those folders
+    by a handful of radiographs on every run - they had accumulated into the
+    hundreds. Only files that appear while the test runs are removed, so the
+    checked-in dataset is untouched.
+    """
+    # Imported here rather than at module scope: conftest is loaded before
+    # any test module, and this keeps collection working even for tests that
+    # never touch the app.
+    from app.main import PREDICTION_FOLDER, UPLOAD_FOLDER
+
+    folders = [folder for folder in (UPLOAD_FOLDER, PREDICTION_FOLDER) if os.path.isdir(folder)]
+    before = {folder: set(os.listdir(folder)) for folder in folders}
+    try:
+        yield
+    finally:
+        for folder, existing in before.items():
+            for name in set(os.listdir(folder)) - existing:
+                try:
+                    os.unlink(os.path.join(folder, name))
+                except OSError:
+                    # A file still held open on Windows is not worth failing
+                    # a passing test over.
+                    pass
+
 
 @pytest.fixture
 def mock_db():

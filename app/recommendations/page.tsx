@@ -62,8 +62,36 @@ export default function RecommendationsPage() {
          const patient = await patientResponse.json()
          setPatientData(patient)
 
-         const storedConditions = localStorage.getItem("detectedConditions")
-         const conditions: string[] = storedConditions ? JSON.parse(storedConditions) : []
+         // Prefer the stored detections: localStorage only ever holds this
+         // browser's last analysis, so relying on it first loses the case on
+         // reload and for anyone else opening the same patient.
+         let conditions: string[] = []
+         try {
+           const conditionsResponse = await fetch(`/api/patients/${patientId}/conditions`)
+           if (conditionsResponse.ok) {
+             const rows = await conditionsResponse.json()
+             if (Array.isArray(rows)) {
+               // One row per detection box; the engine wants distinct conditions.
+               conditions = Array.from(
+                 new Set(rows.map((row: any) => row?.condition_type).filter(Boolean))
+               )
+             }
+           }
+         } catch (conditionsError) {
+           console.warn("Could not load stored conditions:", conditionsError)
+         }
+
+         if (conditions.length === 0) {
+           const storedConditions = localStorage.getItem("detectedConditions")
+           if (storedConditions) {
+             try {
+               const parsed = JSON.parse(storedConditions)
+               if (Array.isArray(parsed)) conditions = parsed
+             } catch {
+               // Ignore a corrupted cache; the database is the source of truth.
+             }
+           }
+         }
          setDetectedConditions(conditions)
 
          if (conditions.length > 0) {

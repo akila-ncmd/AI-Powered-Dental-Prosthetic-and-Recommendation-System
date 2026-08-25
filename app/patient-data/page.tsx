@@ -59,6 +59,57 @@ export default function PatientDataPage() {
     return Object.keys(newErrors).length === 0
   }
 
+  // Bind the anonymous /predict run to the patient record that has just been
+  // created. This is the only write path for db.detected_conditions and
+  // db.images: /predict cannot do it because no patient exists while the
+  // radiograph is being analysed.
+  // Returns null when there was nothing to attach.
+  const attachPendingAnalysis = async (pId: string): Promise<boolean | null> => {
+    const stored = localStorage.getItem("pendingAnalysis")
+    if (!stored) return null
+
+    let analysis: any
+    try {
+      analysis = JSON.parse(stored)
+    } catch {
+      localStorage.removeItem("pendingAnalysis")
+      return null
+    }
+
+    const hasAnything =
+      (Array.isArray(analysis?.detections) && analysis.detections.length > 0) ||
+      (Array.isArray(analysis?.detected_conditions) && analysis.detected_conditions.length > 0) ||
+      analysis?.output_image ||
+      analysis?.input_image
+
+    if (!hasAnything) {
+      localStorage.removeItem("pendingAnalysis")
+      return null
+    }
+
+    try {
+      const response = await fetch(`/api/patients/${pId}/analysis`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          detections: analysis.detections ?? [],
+          detected_conditions: analysis.detected_conditions ?? [],
+          output_image: analysis.output_image ?? "",
+          input_image: analysis.input_image ?? "",
+        }),
+      })
+
+      if (!response.ok) return false
+
+      // Only clear it once the database has a copy; otherwise the analysis
+      // would be lost with nowhere left to recover it from.
+      localStorage.removeItem("pendingAnalysis")
+      return true
+    } catch {
+      return false
+    }
+  }
+
   const handleSubmit = async () => {
     if (!validateForm()) return
 
@@ -103,7 +154,16 @@ export default function PatientDataPage() {
       if (pId) {
         localStorage.setItem("currentPatientId", pId.toString())
         setPatientId(pId)
-        alert("Patient record saved successfully.")
+
+        const attached = await attachPendingAnalysis(pId.toString())
+        if (attached === false) {
+          alert(
+            "Patient record saved, but the X-ray analysis could not be attached to it. " +
+              "Re-run the analysis from the Upload page so the report and the recommendations have data to work from."
+          )
+        } else {
+          alert("Patient record saved successfully.")
+        }
       } else {
         alert("Patient record saved.")
       }

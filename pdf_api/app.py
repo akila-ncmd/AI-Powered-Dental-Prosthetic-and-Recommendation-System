@@ -66,6 +66,25 @@ def server_error(context, exc, status=500):
     }), status
 
 
+def scoped_to_latest_analysis(db, patient_oid):
+    """Query restricting detections and images to the patient's current run.
+
+    Every analysis run is retained so the patient keeps a history, which means
+    an unscoped query would mix findings and radiographs from an X-ray that
+    has since been superseded into one report. Records written before analyses
+    were tracked carry no analysis_id, so a patient with no analysis document
+    falls back to everything on file for them rather than to nothing.
+    """
+    analysis = db.analyses.find_one(
+        {"patient_id": patient_oid},
+        sort=[("created_at", -1), ("_id", -1)],
+    )
+    query = {"patient_id": patient_oid}
+    if analysis:
+        query["analysis_id"] = analysis["_id"]
+    return query
+
+
 def sanitize_filename(name):
     """Sanitize filename to remove invalid characters for Windows and Linux."""
     if not name:
@@ -373,10 +392,15 @@ def generate_report_from_db(patient_id):
                 "budget": patient.get("budget", 0)
             }
 
-            # Fetch detected conditions from MongoDB
-            detected_conditions_docs = list(db.detected_conditions.find({"patient_id": ObjectId(patient_id)}))
-            detected_conditions = [doc.get("condition_type", "Unknown") for doc in detected_conditions_docs] if detected_conditions_docs else []
-            print(f"DEBUG: Found {len(detected_conditions_docs)} detected conditions: {detected_conditions}")
+            # Fetch detected conditions from MongoDB. One document is stored
+            # per detection box, so four caries produce four rows; the report
+            # lists the distinct findings, not one bullet per box.
+            analysis_scope = scoped_to_latest_analysis(db, ObjectId(patient_id))
+            detected_conditions_docs = list(db.detected_conditions.find(analysis_scope))
+            detected_conditions = list(dict.fromkeys(
+                doc.get("condition_type", "Unknown") for doc in detected_conditions_docs
+            ))
+            print(f"DEBUG: Found {len(detected_conditions_docs)} detection rows: {detected_conditions}")
 
             # Fetch recommendations from MongoDB
             # recommendation_engine._store_recommendations writes patient_id as
@@ -398,21 +422,27 @@ def generate_report_from_db(patient_id):
             annotated_image_url = None
             uploaded_image_data = None
 
-            # Get original image
-            original_image = db.images.find_one({
-                "patient_id": ObjectId(patient_id),
-                "image_type": "original"
-            })
+            # Both images come from the same run as the conditions above.
+            # Taking the newest of each independently could pair one run's
+            # original with another run's annotation, which would present two
+            # different radiographs as a before/after of the same X-ray.
+            original_image = db.images.find_one(
+                {**analysis_scope, "image_type": "original"},
+                sort=[("uploaded_at", -1)],
+            )
             if original_image:
-                uploaded_image_url = f"http://127.0.0.1:8000/uploads/{original_image['filename']}"
+                # Relative: download_and_resize_image resolves these against
+                # the backend itself, and an absolute 127.0.0.1 URL is
+                # unreachable the moment the two services are not co-hosted.
+                uploaded_image_url = f"/api/uploads/{original_image['filename']}"
 
             # Get annotated image
-            annotated_image = db.images.find_one({
-                "patient_id": ObjectId(patient_id),
-                "image_type": "annotated"
-            })
+            annotated_image = db.images.find_one(
+                {**analysis_scope, "image_type": "annotated"},
+                sort=[("uploaded_at", -1)],
+            )
             if annotated_image:
-                annotated_image_url = f"http://127.0.0.1:8000/outputs/predictions/{annotated_image['filename']}"
+                annotated_image_url = f"/api/outputs/predictions/{annotated_image['filename']}"
 
         print(f"DEBUG: Patient data: {patient_data}")
         print(f"DEBUG: Detected conditions: {detected_conditions}")
